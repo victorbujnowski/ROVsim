@@ -5,6 +5,10 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
 #include "UObject/ConstructorHelpers.h"
+#include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
+#include "InputActionValue.h"
+#include "GameFramework/PlayerController.h"
 
 AROVPawn::AROVPawn()
 {
@@ -52,6 +56,7 @@ void AROVPawn::Tick(float DeltaTime)
 
 	ApplyBuoyancy();
 	ApplyDrag();
+	ApplyThrusters();
 }
 
 // Called to bind functionality to input
@@ -59,6 +64,21 @@ void AROVPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
+	UEnhancedInputComponent* Input = Cast<UEnhancedInputComponent>(PlayerInputComponent);
+	if (!Input)
+	{
+		return;
+	}
+
+	// Triggered: enquanto a tecla está pressionada | Completed: quando solta (valor volta a 0)
+	Input->BindAction(SurgeAction, ETriggerEvent::Triggered, this, &AROVPawn::OnSurge);
+	Input->BindAction(SurgeAction, ETriggerEvent::Completed, this, &AROVPawn::OnSurge);
+	Input->BindAction(SwayAction, ETriggerEvent::Triggered, this, &AROVPawn::OnSway);
+	Input->BindAction(SwayAction, ETriggerEvent::Completed, this, &AROVPawn::OnSway);
+	Input->BindAction(HeaveAction, ETriggerEvent::Triggered, this, &AROVPawn::OnHeave);
+	Input->BindAction(HeaveAction, ETriggerEvent::Completed, this, &AROVPawn::OnHeave);
+	Input->BindAction(YawAction, ETriggerEvent::Triggered, this, &AROVPawn::OnYaw);
+	Input->BindAction(YawAction, ETriggerEvent::Completed, this, &AROVPawn::OnYaw);
 }
 
 float AROVPawn::GetSubmergedFraction() const
@@ -107,4 +127,47 @@ void AROVPawn::ApplyDrag()
 	const FVector DragTorque = -AngularDamping * AngularVelocity * Submerged;   // N·m
 
 	Body->AddTorqueInRadians(DragTorque * 10000.f); // N·m -> kg·cm²/s²
+}
+
+void AROVPawn::NotifyControllerChanged()
+{
+	Super::NotifyControllerChanged();
+
+	// Ativa o mapeamento de teclas do ROV para o jogador que o controla
+	if (APlayerController* PC = Cast<APlayerController>(Controller))
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* Subsystem =
+			ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer()))
+		{
+			Subsystem->AddMappingContext(InputMapping, 0);
+		}
+	}
+}
+
+void AROVPawn::OnSurge(const FInputActionValue& Value) { ThrustCommand.X = Value.Get<float>(); }
+void AROVPawn::OnSway(const FInputActionValue& Value) { ThrustCommand.Y = Value.Get<float>(); }
+void AROVPawn::OnHeave(const FInputActionValue& Value) { ThrustCommand.Z = Value.Get<float>(); }
+void AROVPawn::OnYaw(const FInputActionValue& Value) { YawCommand = Value.Get<float>(); }
+
+void AROVPawn::ApplyThrusters()
+{
+	if (GetSubmergedFraction() <= 0.f)
+	{
+		return; // propulsor fora d'água não empurra
+	}
+
+	// Força no referencial do PRÓPRIO ROV (local): X = frente, Y = direita, Z = cima
+	const FVector LocalForceN(
+		ThrustCommand.X * MaxSurgeThrust,
+		ThrustCommand.Y * MaxSwayThrust,
+		ThrustCommand.Z * MaxHeaveThrust);
+
+	// Converte de local para mundo usando o quatérnio de orientação do ROV
+	const FQuat Orientation = Body->GetComponentQuat();
+	const FVector WorldForceN = Orientation.RotateVector(LocalForceN);
+	Body->AddForce(WorldForceN * 100.f); // N -> kg·cm/s²
+
+	// Torque de guinada (yaw) em torno do eixo Z local do ROV
+	const FVector WorldTorqueNm = Orientation.RotateVector(FVector(0.f, 0.f, YawCommand * MaxYawTorque));
+	Body->AddTorqueInRadians(WorldTorqueNm * 10000.f); // N·m -> kg·cm²/s²
 }

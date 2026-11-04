@@ -9,6 +9,9 @@
 class UStaticMeshComponent;
 class USpringArmComponent;
 class UCameraComponent;
+class UInputMappingContext;
+class UInputAction;
+struct FInputActionValue;
 
 UCLASS()
 class ROVSIM_API AROVPawn : public APawn
@@ -61,6 +64,49 @@ protected:
 
 	float GetSubmergedFraction() const;
 	void ApplyDrag();
+
+	// --- Input ---
+	UPROPERTY(EditAnywhere, Category = "ROV|Input")
+	TObjectPtr<UInputMappingContext> InputMapping;
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Input")
+	TObjectPtr<UInputAction> SurgeAction;
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Input")
+	TObjectPtr<UInputAction> SwayAction;
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Input")
+	TObjectPtr<UInputAction> HeaveAction;
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Input")
+	TObjectPtr<UInputAction> YawAction;
+
+	// --- Thrusters ---
+	UPROPERTY(EditAnywhere, Category = "ROV|Thrusters")
+	float MaxSurgeThrust = 400.f;      // N
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Thrusters")
+	float MaxSwayThrust = 250.f;       // N
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Thrusters")
+	float MaxHeaveThrust = 250.f;      // N
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Thrusters")
+	float MaxYawTorque = 150.f;        // N·m
+
+	// Comando atual de cada eixo, de -1 a 1 (X = surge, Y = sway, Z = heave)
+	FVector ThrustCommand = FVector::ZeroVector;
+	float YawCommand = 0.f;
+
+	void OnSurge(const FInputActionValue& Value);
+	void OnSway(const FInputActionValue& Value);
+	void OnHeave(const FInputActionValue& Value);
+	void OnYaw(const FInputActionValue& Value);
+
+	void ApplyThrusters();
+
+	// Chamado quando um Controller (jogador) assume ou solta este Pawn
+	virtual void NotifyControllerChanged() override;
 
 public:
 	virtual void Tick(float DeltaTime) override;

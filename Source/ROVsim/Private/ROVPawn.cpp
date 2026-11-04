@@ -51,6 +51,7 @@ void AROVPawn::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 
 	ApplyBuoyancy();
+	ApplyDrag();
 }
 
 // Called to bind functionality to input
@@ -60,13 +61,18 @@ void AROVPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 
 }
 
-void AROVPawn::ApplyBuoyancy()
+float AROVPawn::GetSubmergedFraction() const
 {
 	// Profundidade do centro do ROV (positivo = abaixo da superfície), em cm
 	const float Depth = WaterSurfaceZ - Body->GetComponentLocation().Z;
 
-	// Fração do casco submersa: 0 = fora d'água, 1 = totalmente submerso
-	const float SubmergedFraction = FMath::Clamp((Depth + HullHeight * 0.5f) / HullHeight, 0.f, 1.f);
+	// 0 = fora d'água, 1 = totalmente submerso
+	return FMath::Clamp((Depth + HullHeight * 0.5f) / HullHeight, 0.f, 1.f);
+}
+
+void AROVPawn::ApplyBuoyancy()
+{
+	const float SubmergedFraction = GetSubmergedFraction();
 
 	// Gravidade do mundo vem em cm/s² (negativa); convertemos para m/s²
 	const float Gravity = FMath::Abs(GetWorld()->GetGravityZ()) / 100.f;
@@ -76,4 +82,29 @@ void AROVPawn::ApplyBuoyancy()
 
 	// Newtons -> unidades da Unreal (kg·cm/s²) e aplica para cima
 	Body->AddForce(FVector(0.f, 0.f, BuoyancyNewtons * 100.f));
+}
+
+void AROVPawn::ApplyDrag()
+{
+	const float Submerged = GetSubmergedFraction();
+	if (Submerged <= 0.f)
+	{
+		return; // fora d'água: sem arrasto hidrodinâmico
+	}
+
+	// --- Arrasto linear (translação) ---
+	// Velocidade da Unreal vem em cm/s; convertemos para m/s
+	const FVector Velocity = Body->GetPhysicsLinearVelocity() / 100.f;
+	const float Speed = Velocity.Size();
+
+	const float QuadraticCoef = 0.5f * WaterDensity * DragCoefficient * ReferenceArea; // kg/m
+	const FVector DragNewtons = -(LinearDamping * Velocity + QuadraticCoef * Speed * Velocity) * Submerged;
+
+	Body->AddForce(DragNewtons * 100.f); // N -> kg·cm/s²
+
+	// --- Arrasto angular (rotação) ---
+	const FVector AngularVelocity = Body->GetPhysicsAngularVelocityInRadians(); // rad/s
+	const FVector DragTorque = -AngularDamping * AngularVelocity * Submerged;   // N·m
+
+	Body->AddTorqueInRadians(DragTorque * 10000.f); // N·m -> kg·cm²/s²
 }

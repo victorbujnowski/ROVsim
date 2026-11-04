@@ -46,6 +46,22 @@ protected:
 
 	void ApplyBuoyancy();
 
+	// Parâmetros de arrasto
+	UPROPERTY(EditAnywhere, Category = "ROV|Drag")
+	float LinearDamping = 50.f;        // N·s/m - arrasto em baixa velocidade
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Drag")
+	float DragCoefficient = 1.05f;     // Cd - adimensional (cubo ≈ 1.05)
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Drag")
+	float ReferenceArea = 1.0f;        // m² - área frontal (face do cubo de 1 m)
+
+	UPROPERTY(EditAnywhere, Category = "ROV|Drag")
+	float AngularDamping = 200.f;      // N·m·s/rad - resistência à rotação
+
+	float GetSubmergedFraction() const;
+	void ApplyDrag();
+
 public:
 	virtual void Tick(float DeltaTime) override;
 

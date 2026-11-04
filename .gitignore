@@ -1,0 +1,21 @@
+# Gerados pela Unreal / Visual Studio
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/
+Backup/
+.vs/
+.vscode/
+.idea/
+*.sln
+*.slnx
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+UpgradeLog*.htm
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+Plugins/VisualStudioTools/

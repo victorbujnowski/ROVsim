@@ -1,0 +1,30 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "{4506FFB4-4D7E-E805-7491-7CAEC7AB0EB5}",
+  "Category": "",
+  "Description": "",
+  "Modules": [
+    {
+      "Name": "ROVsim",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "ModelingToolsEditorMode",
+      "Enabled": true
+    },
+    {
+      "Name": "VisualStudioTools",
+      "Enabled": true,
+      "SupportedTargetPlatforms": [
+        "Win64"
+      ]
+    }
+  ],
+  "TargetPlatforms": [],
+  "AdditionalRootDirectories": [],
+  "AdditionalPluginDirectories": [],
+  "EpicSampleNameHash": ""
+}

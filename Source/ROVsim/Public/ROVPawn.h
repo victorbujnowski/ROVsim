@@ -1,10 +1,14 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
 #include "ROVPawn.generated.h"
+
+// NOVO: "forward declarations" - dizem ao compilador que essas classes existem,
+// sem precisar incluir os cabeçalhos inteiros aqui (compila mais rápido).
+class UStaticMeshComponent;
+class USpringArmComponent;
+class UCameraComponent;
 
 UCLASS()
 class ROVSIM_API AROVPawn : public APawn
@@ -12,18 +16,23 @@ class ROVSIM_API AROVPawn : public APawn
 	GENERATED_BODY()
 
 public:
-	// Sets default values for this pawn's properties
 	AROVPawn();
 
 protected:
-	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 
-public:	
-	// Called every frame
+	// NOVO: componentes do ROV
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV")
+	TObjectPtr<UStaticMeshComponent> Body;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV")
+	TObjectPtr<USpringArmComponent> SpringArm;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV")
+	TObjectPtr<UCameraComponent> Camera;
+
+public:
 	virtual void Tick(float DeltaTime) override;
 
-	// Called to bind functionality to input
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
-
 };

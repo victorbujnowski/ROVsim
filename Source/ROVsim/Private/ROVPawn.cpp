@@ -1,17 +1,44 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
-
 #include "ROVPawn.h"
 
-// Sets default values
+// NOVO: agora sim incluímos os cabeçalhos completos
+#include "Components/StaticMeshComponent.h"
+#include "GameFramework/SpringArmComponent.h"
+#include "Camera/CameraComponent.h"
+#include "UObject/ConstructorHelpers.h"
+
 AROVPawn::AROVPawn()
 {
- 	// Set this pawn to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
 
-}
+	// Corpo: cria o componente e o torna a raiz do Actor
+	Body = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Body"));
+	RootComponent = Body;
 
-// Called when the game starts or when spawned
+	// Usa o cubo que vem com a engine como malha provisória
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
+	if (CubeMesh.Succeeded())
+	{
+		Body->SetStaticMesh(CubeMesh.Object);
+	}
+
+	// Física: o corpo passa a ser simulado pelo Chaos
+	Body->SetSimulatePhysics(true);
+	Body->SetMassOverrideInKg(NAME_None, 100.f, true);
+
+	// Braço da câmera, preso ao corpo
+	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SpringArm"));
+	SpringArm->SetupAttachment(Body);
+	SpringArm->TargetArmLength = 400.f;
+	SpringArm->SetRelativeRotation(FRotator(-20.f, 0.f, 0.f));
+	SpringArm->bDoCollisionTest = false;
+
+	// Câmera na ponta do braço
+	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
+	Camera->SetupAttachment(SpringArm);
+
+	// O jogador 0 controla este Pawn automaticamente
+	AutoPossessPlayer = EAutoReceiveInput::Player0;
+}
 void AROVPawn::BeginPlay()
 {
 	Super::BeginPlay();

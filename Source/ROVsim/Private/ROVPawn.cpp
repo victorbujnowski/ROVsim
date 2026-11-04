@@ -50,6 +50,7 @@ void AROVPawn::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	ApplyBuoyancy();
 }
 
 // Called to bind functionality to input
@@ -59,3 +60,20 @@ void AROVPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 
 }
 
+void AROVPawn::ApplyBuoyancy()
+{
+	// Profundidade do centro do ROV (positivo = abaixo da superfície), em cm
+	const float Depth = WaterSurfaceZ - Body->GetComponentLocation().Z;
+
+	// Fração do casco submersa: 0 = fora d'água, 1 = totalmente submerso
+	const float SubmergedFraction = FMath::Clamp((Depth + HullHeight * 0.5f) / HullHeight, 0.f, 1.f);
+
+	// Gravidade do mundo vem em cm/s² (negativa); convertemos para m/s²
+	const float Gravity = FMath::Abs(GetWorld()->GetGravityZ()) / 100.f;
+
+	// Arquimedes: F = rho * V * g  (em Newtons)
+	const float BuoyancyNewtons = WaterDensity * DisplacedVolume * SubmergedFraction * Gravity;
+
+	// Newtons -> unidades da Unreal (kg·cm/s²) e aplica para cima
+	Body->AddForce(FVector(0.f, 0.f, BuoyancyNewtons * 100.f));
+}

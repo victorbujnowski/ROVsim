@@ -19,3 +19,6 @@ UpgradeLog*.htm
 Plugins/*/Binaries/
 Plugins/*/Intermediate/
 Plugins/VisualStudioTools/
+
+# Arquivos brutos baixados (fonte dos assets importados em Content/)
+RawAssets/

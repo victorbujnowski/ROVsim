@@ -13,6 +13,7 @@
 #include "InputMappingContext.h"
 #include "InputAction.h"
 #include "InputModifiers.h"
+#include "InputTriggers.h"
 #include "InputActionValue.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -493,27 +494,47 @@ void AROVPawn::BuildInputMappings()
 		}
 	};
 
+	// Mapeia um eixo analógico do gamepad: zona morta + curva de resposta
+	auto MapStick = [this](UInputAction* Action, const FKey& Key, bool bNegate)
+	{
+		FEnhancedActionKeyMapping& Mapping = InputContext->MapKey(Action, Key);
+
+		// Zona morta: ignora os primeiros 15% (o stick nunca volta exatamente ao zero)
+		UInputModifierDeadZone* DeadZone = NewObject<UInputModifierDeadZone>(InputContext);
+		DeadZone->Type = EDeadZoneType::Axial;
+		DeadZone->LowerThreshold = 0.15f;
+		Mapping.Modifiers.Add(DeadZone);
+
+		// Curva quadrática: precisão perto do centro, potência total no fim do curso
+		UInputModifierResponseCurveExponential* Curve = NewObject<UInputModifierResponseCurveExponential>(InputContext);
+		Curve->CurveExponent = FVector(2.f, 2.f, 1.f);
+		Mapping.Modifiers.Add(Curve);
+
+		if (bNegate)
+		{
+			Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(InputContext));
+		}
+	};
+
 	SurgeAction = MakeAction(TEXT("IA_Surge_Runtime"), EInputActionValueType::Axis1D);
 	Map(SurgeAction, EKeys::W, false);
 	Map(SurgeAction, EKeys::S, true);
-	Map(SurgeAction, EKeys::Gamepad_LeftY, false);
+	MapStick(SurgeAction, EKeys::Gamepad_RightY, false);
 
 	SwayAction = MakeAction(TEXT("IA_Sway_Runtime"), EInputActionValueType::Axis1D);
 	Map(SwayAction, EKeys::D, false);
 	Map(SwayAction, EKeys::A, true);
-	Map(SwayAction, EKeys::Gamepad_LeftX, false);
+	MapStick(SwayAction, EKeys::Gamepad_RightX, false);
 
 	HeaveAction = MakeAction(TEXT("IA_Heave_Runtime"), EInputActionValueType::Axis1D);
 	Map(HeaveAction, EKeys::E, false);
 	Map(HeaveAction, EKeys::Q, true);
-	Map(HeaveAction, EKeys::Gamepad_RightShoulder, false);
-	Map(HeaveAction, EKeys::Gamepad_LeftShoulder, true);
+	MapStick(HeaveAction, EKeys::Gamepad_LeftY, false);
 
 	YawAction = MakeAction(TEXT("IA_Yaw_Runtime"), EInputActionValueType::Axis1D);
 	Map(YawAction, EKeys::Right, false);
 	Map(YawAction, EKeys::Left, true);
-	Map(YawAction, EKeys::Gamepad_RightTriggerAxis, false);
-	Map(YawAction, EKeys::Gamepad_LeftTriggerAxis, true);
+	MapStick(YawAction, EKeys::Gamepad_LeftX, false);
 
 	// Mouse: Y invertido para "mouse para cima = olhar para cima"
 	LookAction = MakeAction(TEXT("IA_Look_Runtime"), EInputActionValueType::Axis2D);
@@ -528,6 +549,16 @@ void AROVPawn::BuildInputMappings()
 
 	ZoomAction = MakeAction(TEXT("IA_Zoom_Runtime"), EInputActionValueType::Axis1D);
 	Map(ZoomAction, EKeys::MouseWheelAxis, false);
+	// Gamepad: RB aproxima, LB afasta. "Pressed" dispara uma vez por aperto (um passo de zoom).
+	for (const FKey& Key : { EKeys::Gamepad_RightShoulder, EKeys::Gamepad_LeftShoulder })
+	{
+		FEnhancedActionKeyMapping& Mapping = InputContext->MapKey(ZoomAction, Key);
+		Mapping.Triggers.Add(NewObject<UInputTriggerPressed>(InputContext));
+		if (Key == EKeys::Gamepad_LeftShoulder)
+		{
+			Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(InputContext));
+		}
+	}
 
 	ToggleCameraAction = MakeAction(TEXT("IA_ToggleCamera_Runtime"), EInputActionValueType::Boolean);
 	Map(ToggleCameraAction, EKeys::C, false);
@@ -540,6 +571,32 @@ void AROVPawn::BuildInputMappings()
 	ToggleLightsAction = MakeAction(TEXT("IA_ToggleLights_Runtime"), EInputActionValueType::Boolean);
 	Map(ToggleLightsAction, EKeys::L, false);
 	Map(ToggleLightsAction, EKeys::Gamepad_FaceButton_Left, false);
+
+	// D-pad: gira a câmera. Direita/esquerda já caem no eixo X;
+	// cima/baixo passam pelo "Swizzle", que troca X por Y.
+	LookPadAction = MakeAction(TEXT("IA_LookPad_Runtime"), EInputActionValueType::Axis2D);
+	Map(LookPadAction, EKeys::Gamepad_DPad_Right, false);
+	Map(LookPadAction, EKeys::Gamepad_DPad_Left, true);
+	for (const FKey& Key : { EKeys::Gamepad_DPad_Up, EKeys::Gamepad_DPad_Down })
+	{
+		FEnhancedActionKeyMapping& Mapping = InputContext->MapKey(LookPadAction, Key);
+		Mapping.Modifiers.Add(NewObject<UInputModifierSwizzleAxis>(InputContext)); // padrão YXZ: X vira Y
+		if (Key == EKeys::Gamepad_DPad_Down)
+		{
+			Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(InputContext));
+		}
+	}
+
+	// Reset: segurar B / Círculo (ou R no teclado) por 1 segundo
+	ResetAction = MakeAction(TEXT("IA_Reset_Runtime"), EInputActionValueType::Boolean);
+	for (const FKey& Key : { EKeys::Gamepad_FaceButton_Right, EKeys::R })
+	{
+		FEnhancedActionKeyMapping& Mapping = InputContext->MapKey(ResetAction, Key);
+		UInputTriggerHold* Hold = NewObject<UInputTriggerHold>(InputContext);
+		Hold->HoldTimeThreshold = 1.f;
+		Hold->bIsOneShot = true; // dispara uma vez, e não a cada frame enquanto segura
+		Mapping.Triggers.Add(Hold);
+	}
 }
 
 void AROVPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -571,6 +628,9 @@ void AROVPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 	Input->BindAction(ToggleCameraAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleCamera);
 	Input->BindAction(ToggleModeAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleMode);
 	Input->BindAction(ToggleLightsAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleLights);
+	Input->BindAction(LookPadAction, ETriggerEvent::Triggered, this, &AROVPawn::OnLookPad);
+	// Com o gatilho "Hold", Triggered só acontece depois de segurar o botão pelo tempo definido
+	Input->BindAction(ResetAction, ETriggerEvent::Triggered, this, &AROVPawn::OnResetHeld);
 }
 
 void AROVPawn::NotifyControllerChanged()
@@ -646,4 +706,32 @@ void AROVPawn::OnToggleMode()
 void AROVPawn::OnToggleLights()
 {
 	SetLightsOn(!bLightsOn);
+}
+
+void AROVPawn::OnLookPad(const FInputActionValue& Value)
+{
+	// D-pad é digital (0 ou 1). Multiplicar pelo tempo do frame transforma em "graus por segundo":
+	// a câmera gira na mesma velocidade com 30 ou 120 FPS.
+	const FVector2D Step = Value.Get<FVector2D>() * GamepadLookSpeed * GetWorld()->GetDeltaSeconds();
+
+	if (CameraMode == EROVCameraMode::External)
+	{
+		if (Controller)
+		{
+			FRotator Rotation = Controller->GetControlRotation();
+			Rotation.Yaw += Step.X;
+			Rotation.Pitch = FMath::ClampAngle(Rotation.Pitch + Step.Y, -80.f, 45.f);
+			Controller->SetControlRotation(Rotation);
+		}
+	}
+	else
+	{
+		CockpitPanTilt.Yaw = FMath::Clamp(CockpitPanTilt.Yaw + Step.X, -CockpitPanLimit, CockpitPanLimit);
+		CockpitPanTilt.Pitch = FMath::Clamp(CockpitPanTilt.Pitch + Step.Y, CockpitTiltMin, CockpitTiltMax);
+	}
+}
+
+void AROVPawn::OnResetHeld()
+{
+	ResetToStart();
 }

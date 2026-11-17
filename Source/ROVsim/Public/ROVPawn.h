@@ -253,6 +253,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "ROV|Camera")
 	float CockpitTiltMax = 30.f;
 
+	/** Velocidade da câmera com o D-pad do gamepad */
+	UPROPERTY(EditAnywhere, Category = "ROV|Camera")
+	float GamepadLookSpeed = 90.f;     // °/s
+
 private:
 	// --- Simulação ---
 	void TickSimulator(float DeltaTime);
@@ -273,6 +277,8 @@ private:
 	void OnToggleCamera();
 	void OnToggleMode();
 	void OnToggleLights();
+	void OnLookPad(const FInputActionValue& Value);
+	void OnResetHeld();
 
 	UPROPERTY(Transient) TObjectPtr<UInputMappingContext> InputContext;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> SurgeAction;
@@ -284,6 +290,8 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UInputAction> ToggleCameraAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> ToggleModeAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> ToggleLightsAction;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> LookPadAction;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ResetAction;
 
 	// --- Estado ---
 	FVector PilotTranslation = FVector::ZeroVector; // comando do piloto, -1..1

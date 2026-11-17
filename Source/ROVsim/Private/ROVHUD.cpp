@@ -73,7 +73,8 @@ void AROVHUD::DrawHUD()
 	// Ajuda de controles no rodapé
 	const TArray<FString> Help = {
 		TEXT("W/S frente/re   A/D lateral   E/Q sobe/desce   Setas esq/dir giram"),
-		TEXT("Mouse olha   Roda zoom   C camera   M modo   L luzes")
+		TEXT("Mouse olha   Roda zoom   C camera   M modo   L luzes   segurar R reset"),
+		TEXT("Gamepad: stick esq sobe/gira   stick dir anda/lateral   D-pad camera   RB/LB zoom   Y camera   X luzes   Menu modo   segurar B reset")
 	};
 	DrawPanel(Help, 20.f, Canvas->ClipY - (Help.Num() * LineHeight + 2.f * Padding) - 20.f, FLinearColor(0.85f, 0.85f, 0.85f));
 

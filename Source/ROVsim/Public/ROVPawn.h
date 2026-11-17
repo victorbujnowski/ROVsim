@@ -13,6 +13,8 @@ class UCameraComponent;
 class USpotLightComponent;
 class UInputMappingContext;
 class UInputAction;
+class UROVUdpLinkComponent;
+class UROVTcpCommandComponent;
 struct FInputActionValue;
 
 // Categoria de log própria: filtrar por "LogROV" no Output Log
@@ -86,6 +88,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "ROV")
 	void SetPilotCommand(FVector Translation, float Yaw);
 
+	/** Volta o ROV para onde ele nasceu, parado e com os propulsores zerados */
+	UFUNCTION(BlueprintCallable, Category = "ROV")
+	void ResetToStart();
+
 	EROVControlMode GetControlMode() const { return ControlMode; }
 	EROVCameraMode GetCameraMode() const { return CameraMode; }
 	bool AreLightsOn() const { return bLightsOn; }
@@ -123,6 +129,14 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV|Componentes")
 	TObjectPtr<USpotLightComponent> LightRight;
+
+	/** Controle externo por UDP (comandos na porta 5000, telemetria na 5001) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV|Componentes")
+	TObjectPtr<UROVUdpLinkComponent> UdpLink;
+
+	/** Comandos discretos por TCP (porta 5002): modo, luzes, câmera, reset */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV|Componentes")
+	TObjectPtr<UROVTcpCommandComponent> TcpCommands;
 
 	// =====================================================================
 	// Estado inicial
@@ -281,4 +295,5 @@ private:
 	float LastCameraYaw = 0.f;
 	FRotator CockpitPanTilt = FRotator::ZeroRotator;
 	FROVTelemetry Telemetry;
+	FTransform StartTransform; // onde o ROV nasceu (usado pelo RESET)
 };

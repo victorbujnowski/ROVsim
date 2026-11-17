@@ -16,6 +16,8 @@
 #include "InputActionValue.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "ROVUdpLinkComponent.h"
+#include "ROVTcpCommandComponent.h"
 
 DEFINE_LOG_CATEGORY(LogROV);
 
@@ -128,6 +130,10 @@ AROVPawn::AROVPawn()
 	LightLeft = MakeLight(TEXT("LightLeft"), -90.f);
 	LightRight = MakeLight(TEXT("LightRight"), 90.f);
 
+	// Link de rede: componente sem posição no espaço, por isso não tem SetupAttachment
+	UdpLink = CreateDefaultSubobject<UROVUdpLinkComponent>(TEXT("UdpLink"));
+	TcpCommands = CreateDefaultSubobject<UROVTcpCommandComponent>(TEXT("TcpCommands"));
+
 	// Quem cria e possui o ROV é o AROVGameMode (no PlayerStart), por isso não há AutoPossess aqui.
 }
 
@@ -136,6 +142,7 @@ void AROVPawn::BeginPlay()
 	Super::BeginPlay();
 
 	LastCameraYaw = GetActorRotation().Yaw;
+	StartTransform = GetActorTransform();
 	SpringArm->TargetArmLength = DesiredArmLength;
 
 	// Aplica o estado inicial escolhido no painel Details
@@ -220,6 +227,27 @@ void AROVPawn::SetPilotCommand(FVector Translation, float Yaw)
 {
 	PilotTranslation = Translation.BoundToCube(1.f);
 	PilotYaw = FMath::Clamp(Yaw, -1.f, 1.f);
+}
+
+void AROVPawn::ResetToStart()
+{
+	// Zera os comandos e o estado interno dos dois modos
+	SetPilotCommand(FVector::ZeroVector, 0.f);
+	FilteredThrust = FVector::ZeroVector;
+	FilteredYaw = 0.f;
+	DemoVelocityMs = FVector::ZeroVector;
+	DemoYawRateDeg = 0.f;
+
+	// TeleportPhysics: move o corpo físico junto, sem gerar velocidade pelo "salto"
+	SetActorTransform(StartTransform, false, nullptr, ETeleportType::TeleportPhysics);
+	if (Hull->IsSimulatingPhysics())
+	{
+		Hull->SetPhysicsLinearVelocity(FVector::ZeroVector);
+		Hull->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
+	}
+	LastCameraYaw = GetActorRotation().Yaw;
+
+	UE_LOG(LogROV, Display, TEXT("ROV reiniciado na posição inicial"));
 }
 
 // =============================================================================

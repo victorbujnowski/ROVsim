@@ -84,7 +84,7 @@ void UROVTcpCommandComponent::TickComponent(float DeltaTime, ELevelTick TickType
 		Client.Endpoint = Pending.Endpoint;
 
 		UE_LOG(LogROV, Display, TEXT("TCP: cliente conectado (%s)"), *Client.Endpoint.ToString());
-		SendLine(Client.Socket, TEXT("OK ROVsim pronto. Comandos: PING, STATUS, MODE SIM|DEMO, LIGHTS ON|OFF, CAMERA EXT|COCKPIT, RESET, CURRENT"));
+		SendLine(Client.Socket, TEXT("OK ROVsim pronto. Comandos: PING, STATUS, MODE SIM|DEMO, LIGHTS ON|OFF, CAMERA EXT|COCKPIT, RESET, CURRENT, AUTO"));
 	}
 
 	// 2) Lê cada cliente. De trás para frente, para poder remover quem desconectou.
@@ -215,6 +215,60 @@ FString UROVTcpCommandComponent::ExecuteCommand(const FString& Line)
 
 		ROV->SetCurrent(Knots, Toward);
 		return FString::Printf(TEXT("OK CURRENT %.2f %.0f"), Knots, FRotator::ClampAxis(Toward));
+	}
+
+	if (Command == TEXT("AUTO"))
+	{
+		// AUTO HEADING|DEPTH|ALT  ON|OFF|<valor>     ou     AUTO OFF (desliga todos)
+		if (Argument == TEXT("OFF"))
+		{
+			ROV->SetAutoHeading(false);
+			ROV->SetAutoDepth(false); // desliga o vertical (profundidade ou altitude)
+			return TEXT("OK AUTO OFF");
+		}
+
+		const FString Value = Words.Num() > 2 ? Words[2] : FString();
+		float Number = 0.f;
+		const bool bNumber = FCString::IsNumeric(*Value) && LexTryParseString(Number, *Value);
+
+		if (Argument == TEXT("HEADING"))
+		{
+			if (Value == TEXT("ON"))  { ROV->SetAutoHeading(true);  return TEXT("OK AUTO HEADING ON"); }
+			if (Value == TEXT("OFF")) { ROV->SetAutoHeading(false); return TEXT("OK AUTO HEADING OFF"); }
+			if (bNumber)
+			{
+				ROV->SetTargetHeading(Number);
+				return FString::Printf(TEXT("OK AUTO HEADING %.1f"), ROV->GetTargetHeading()); // o valor APLICADO
+			}
+		}
+		else if (Argument == TEXT("DEPTH"))
+		{
+			if (Value == TEXT("ON"))  { ROV->SetAutoDepth(true);  return TEXT("OK AUTO DEPTH ON"); }
+			if (Value == TEXT("OFF")) { ROV->SetAutoDepth(false); return TEXT("OK AUTO DEPTH OFF"); }
+			if (bNumber)
+			{
+				ROV->SetTargetDepth(Number);
+				return FString::Printf(TEXT("OK AUTO DEPTH %.1f"), ROV->GetTargetDepth());
+			}
+		}
+		else if (Argument == TEXT("ALT"))
+		{
+			if (Value == TEXT("ON"))
+			{
+				ROV->SetAutoAltitude(true);
+				return ROV->GetVerticalAuto() == EROVVerticalAuto::Altitude
+					? TEXT("OK AUTO ALT ON")
+					: TEXT("ERR fundo fora do alcance do altimetro");
+			}
+			if (Value == TEXT("OFF")) { ROV->SetAutoAltitude(false); return TEXT("OK AUTO ALT OFF"); }
+			if (bNumber)
+			{
+				ROV->SetTargetAltitude(Number);
+				return FString::Printf(TEXT("OK AUTO ALT %.1f"), ROV->GetTargetAltitude());
+			}
+		}
+
+		return TEXT("ERR use AUTO HEADING|DEPTH|ALT ON|OFF|<valor>  ou  AUTO OFF");
 	}
 
 

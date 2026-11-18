@@ -2,7 +2,9 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
+#include "ROVPid.h"
 #include "ROVPawn.generated.h"
+
 
 // "Forward declarations": dizem ao compilador que essas classes existem,
 // sem precisar incluir os cabeçalhos inteiros aqui (compila mais rápido).
@@ -36,6 +38,15 @@ enum class EROVCameraMode : uint8
 {
 	External UMETA(DisplayName = "Externa (Spring Arm)"),
 	Cockpit UMETA(DisplayName = "Cockpit (1a pessoa)")
+};
+
+/** Piloto automático vertical: profundidade OU altitude (os dois usam o heave, então são exclusivos) */
+UENUM(BlueprintType)
+enum class EROVVerticalAuto : uint8
+{
+	Off UMETA(DisplayName = "Desligado"),
+	Depth UMETA(DisplayName = "Profundidade"),
+	Altitude UMETA(DisplayName = "Altitude")
 };
 
 /** Telemetria calculada a cada frame (lida pelo HUD e pelo smoke test) */
@@ -94,6 +105,37 @@ public:
 
 	/** Velocidade da corrente no mundo, em m/s */
 	FVector GetCurrentVelocityMs() const;
+
+	/** Liga/desliga o auto heading. Ao ligar, segura o rumo atual. */
+	UFUNCTION(BlueprintCallable, Category = "ROV|Autos")
+	void SetAutoHeading(bool bEnable);
+
+	/** Liga o auto heading com um rumo alvo (graus, 0 = Norte, 90 = Leste) */
+	UFUNCTION(BlueprintCallable, Category = "ROV|Autos")
+	void SetTargetHeading(float HeadingDeg);
+
+	bool IsAutoHeadingOn() const { return bAutoHeading; }
+	float GetTargetHeading() const { return TargetHeadingDeg; }
+
+	/** Auto depth: segura a profundidade atual (desliga o auto altitude) */
+	UFUNCTION(BlueprintCallable, Category = "ROV|Autos")
+	void SetAutoDepth(bool bEnable);
+
+	/** Liga o auto depth com uma profundidade alvo, em metros */
+	UFUNCTION(BlueprintCallable, Category = "ROV|Autos")
+	void SetTargetDepth(float DepthM);
+
+	/** Auto altitude: segura a distância atual até o fundo (desliga o auto depth) */
+	UFUNCTION(BlueprintCallable, Category = "ROV|Autos")
+	void SetAutoAltitude(bool bEnable);
+
+	/** Liga o auto altitude com uma altitude alvo, em metros */
+	UFUNCTION(BlueprintCallable, Category = "ROV|Autos")
+	void SetTargetAltitude(float AltitudeM);
+
+	EROVVerticalAuto GetVerticalAuto() const { return VerticalAuto; }
+	float GetTargetDepth() const { return TargetDepthM; }
+	float GetTargetAltitude() const { return TargetAltitudeM; }
 
 	/** Volta o ROV para onde ele nasceu, parado e com os propulsores zerados */
 	UFUNCTION(BlueprintCallable, Category = "ROV")
@@ -278,6 +320,9 @@ private:
 	void TickDemo(float DeltaTime);
 	void UpdateCameras(float DeltaTime);
 	void UpdateTelemetry();
+	void UpdateAutopilots(float DeltaTime);
+	void UpdateAutoHeading(float DeltaTime);
+	void UpdateAutoVertical(float DeltaTime);
 	float GetSubmergedFraction() const;
 	void ApplyCameraLimits();
 
@@ -294,6 +339,9 @@ private:
 	void OnToggleLights();
 	void OnLookPad(const FInputActionValue& Value);
 	void OnResetHeld();
+	void OnToggleAutoHeading();
+	void OnToggleAutoDepth();
+	void OnToggleAutoAltitude();
 
 	UPROPERTY(Transient) TObjectPtr<UInputMappingContext> InputContext;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> SurgeAction;
@@ -307,6 +355,9 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UInputAction> ToggleLightsAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> LookPadAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> ResetAction;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> AutoHeadingAction;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> AutoDepthAction;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> AutoAltitudeAction;
 
 	// --- Estado ---
 	FVector PilotTranslation = FVector::ZeroVector; // comando do piloto, -1..1
@@ -318,5 +369,25 @@ private:
 	float LastCameraYaw = 0.f;
 	FRotator CockpitPanTilt = FRotator::ZeroRotator;
 	FROVTelemetry Telemetry;
+
+	// --- Pilotos automáticos ---
+	// Rumo: PD (sem I). Kp = 0,08 por grau, Kd = 0,10 por grau/s. Ganhos ajustados simulando o yaw do ROV.
+	FROVPid HeadingPid = FROVPid(0.08f, 0.f, 0.10f);
+	bool bAutoHeading = false;
+	float TargetHeadingDeg = 0.f;
+	float YawCommand = 0.f; // o yaw que vai para os propulsores: do piloto ou do auto heading
+
+	// Vertical: PID com I (a flutuação positiva é uma força constante). Ganhos ajustados simulando o heave;
+	// o limite do I (0,1) é configurado no construtor.
+	FROVPid DepthPid = FROVPid(0.8f, 0.08f, 1.5f);
+	EROVVerticalAuto VerticalAuto = EROVVerticalAuto::Off;
+	float TargetDepthM = 0.f;
+	float TargetAltitudeM = 0.f;
+	FVector TranslationCommand = FVector::ZeroVector;
+
+	// "Segura onde parar": depois que o piloto solta (ou ao ligar o auto), freia antes de gravar o alvo
+	bool bHeadingSettling = false;
+	bool bVerticalSettling = false; // surge, sway e heave que vão para os propulsores
+
 	FTransform StartTransform; // onde o ROV nasceu (usado pelo RESET)
 };

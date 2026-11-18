@@ -132,8 +132,34 @@ void AROVGameMode::Tick(float DeltaSeconds)
 				bPassed ? TEXT("PASSOU") : TEXT("FALHOU"), FVector2D(GroundVelocity).Size(), Expected.Size(), Error);
 			ROV->SetCurrent(0.f, 0.f);
 		} },
-		{ 160.f, [&] { UE_LOG(LogROV, Display, TEXT("SMOKE TEST concluído"));
-					   FGenericPlatformMisc::RequestExit(false, TEXT("ROVSmokeTest")); } },
+		// Autos: rumo 45 graus e 3 m mais fundo, com 1 nó de corrente para o Leste.
+		// Critério do plano: rumo ±2 graus e profundidade ±0,2 m.
+		{ 160.f, [&] { ROV->SetCurrent(1.f, 90.f);
+		               ROV->SetTargetHeading(45.f);
+		               ROV->SetTargetDepth(ROV->GetTelemetry().DepthM + 3.f);
+		               LogTelemetry(TEXT("SIM autos on")); } },
+		{ 175.f, [&] { TakeScreenshot(TEXT("09_sim_autos_corrente")); } },
+		{ 190.f, [&] {
+			const FROVTelemetry& T = ROV->GetTelemetry();
+			const float HeadingError = FMath::Abs(FMath::FindDeltaAngleDegrees(T.HeadingDeg, ROV->GetTargetHeading()));
+			const float DepthError = FMath::Abs(T.DepthM - ROV->GetTargetDepth());
+			UE_LOG(LogROV, Display, TEXT("SMOKE CHECK auto heading: %s (erro %.2f graus)"),
+				HeadingError < 2.f ? TEXT("PASSOU") : TEXT("FALHOU"), HeadingError);
+			UE_LOG(LogROV, Display, TEXT("SMOKE CHECK auto depth: %s (erro %.3f m)"),
+				DepthError < 0.2f ? TEXT("PASSOU") : TEXT("FALHOU"), DepthError);
+			ROV->SetTargetAltitude(3.f); // troca o vertical de profundidade para altitude
+		} },
+		{ 220.f, [&] {
+			const float AltitudeError = FMath::Abs(ROV->GetTelemetry().AltitudeM - ROV->GetTargetAltitude());
+			UE_LOG(LogROV, Display, TEXT("SMOKE CHECK auto altitude: %s (erro %.3f m)"),
+				AltitudeError < 0.2f ? TEXT("PASSOU") : TEXT("FALHOU"), AltitudeError);
+			TakeScreenshot(TEXT("10_sim_auto_altitude"));
+			ROV->SetAutoHeading(false);
+			ROV->SetAutoDepth(false);
+			ROV->SetCurrent(0.f, 0.f);
+		} },
+		{ 221.f, [&] { UE_LOG(LogROV, Display, TEXT("SMOKE TEST concluído"));
+		               FGenericPlatformMisc::RequestExit(false, TEXT("ROVSmokeTest")); } },
 	};
 
 	while (SmokeStep < Script.Num() && T >= Script[SmokeStep].Time)

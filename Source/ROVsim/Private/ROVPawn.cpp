@@ -131,6 +131,10 @@ AROVPawn::AROVPawn()
 	LightLeft = MakeLight(TEXT("LightLeft"), -90.f);
 	LightRight = MakeLight(TEXT("LightRight"), 90.f);
 
+	// Anti-windup do auto depth/altitude: segurar a flutuação de 13 kg exige só ~2,4% do empuxo vertical.
+	// Limitar o I a 10% dá folga para isso sem deixá-lo acumular durante uma descida longa.
+	DepthPid.IntegralLimit = 0.1f;
+
 	// Link de rede: componente sem posição no espaço, por isso não tem SetupAttachment
 	UdpLink = CreateDefaultSubobject<UROVUdpLinkComponent>(TEXT("UdpLink"));
 	TcpCommands = CreateDefaultSubobject<UROVTcpCommandComponent>(TEXT("TcpCommands"));
@@ -263,6 +267,9 @@ void AROVPawn::Tick(float DeltaTime)
 		return;
 	}
 
+	// Pilotos automáticos decidem o comando ANTES de a física usá-lo
+	UpdateAutopilots(DeltaTime);
+
 	if (ControlMode == EROVControlMode::Simulator)
 	{
 		TickSimulator(DeltaTime);
@@ -355,8 +362,8 @@ void AROVPawn::TickSimulator(float DeltaTime)
 
 	// --- 4) Propulsores, com atraso de resposta (filtro de 1ª ordem) ---
 	const float Alpha = 1.f - FMath::Exp(-DeltaTime / FMath::Max(ThrusterTimeConstant, KINDA_SMALL_NUMBER));
-	FilteredThrust += (PilotTranslation - FilteredThrust) * Alpha;
-	FilteredYaw += (PilotYaw - FilteredYaw) * Alpha;
+	FilteredThrust += (TranslationCommand - FilteredThrust) * Alpha;
+	FilteredYaw += (YawCommand - FilteredYaw) * Alpha;
 
 	// Hélice fora d'água não empurra (ventilação): empuxo proporcional à parte submersa
 	const FVector ThrustLocal = FilteredThrust * MaxThrust * Submerged;                  // N (por eixo)
@@ -389,9 +396,9 @@ void AROVPawn::TickDemo(float DeltaTime)
 	const FRotator Heading(0.f, GetActorRotation().Yaw, 0.f);
 
 	// Comando local (frente/lado/vertical) -> velocidade alvo no mundo
-	const FVector TargetVelocity = Heading.RotateVector(PilotTranslation * DemoMaxSpeed);
+	const FVector TargetVelocity = Heading.RotateVector(TranslationCommand * DemoMaxSpeed);
 	DemoVelocityMs += (TargetVelocity - DemoVelocityMs) * Blend;
-	DemoYawRateDeg += (PilotYaw * DemoYawRate - DemoYawRateDeg) * Blend;
+	DemoYawRateDeg += (YawCommand * DemoYawRate - DemoYawRateDeg) * Blend;
 
 	// Rotação: só yaw
 	SetActorRotation(FRotator(0.f, Heading.Yaw + DemoYawRateDeg * DeltaTime, 0.f));
@@ -470,8 +477,8 @@ void AROVPawn::UpdateTelemetry()
 		: DemoYawRateDeg;
 
 	const bool bSim = (ControlMode == EROVControlMode::Simulator);
-	Telemetry.ThrustPercent = (bSim ? FilteredThrust : PilotTranslation) * 100.f;
-	Telemetry.YawThrustPercent = (bSim ? FilteredYaw : PilotYaw) * 100.f;
+	Telemetry.ThrustPercent = (bSim ? FilteredThrust : TranslationCommand) * 100.f;
+	Telemetry.YawThrustPercent = (bSim ? FilteredYaw : YawCommand) * 100.f;
 
 	// Altímetro: raio para baixo até 100 m, medido a partir da base do casco
 	FHitResult Hit;
@@ -590,6 +597,18 @@ void AROVPawn::BuildInputMappings()
 	Map(ToggleLightsAction, EKeys::L, false);
 	Map(ToggleLightsAction, EKeys::Gamepad_FaceButton_Left, false);
 
+	// Auto heading: H no teclado, clique no stick esquerdo (L3) no gamepad
+	AutoHeadingAction = MakeAction(TEXT("IA_AutoHeading_Runtime"), EInputActionValueType::Boolean);
+	Map(AutoHeadingAction, EKeys::H, false);
+	Map(AutoHeadingAction, EKeys::Gamepad_LeftThumbstick, false);
+
+	// Auto depth: J no teclado, clique no stick direito (R3). Auto altitude: K no teclado.
+	AutoDepthAction = MakeAction(TEXT("IA_AutoDepth_Runtime"), EInputActionValueType::Boolean);
+	Map(AutoDepthAction, EKeys::J, false);
+	Map(AutoDepthAction, EKeys::Gamepad_RightThumbstick, false);
+	AutoAltitudeAction = MakeAction(TEXT("IA_AutoAltitude_Runtime"), EInputActionValueType::Boolean);
+	Map(AutoAltitudeAction, EKeys::K, false);
+
 	// D-pad: gira a câmera. Direita/esquerda já caem no eixo X;
 	// cima/baixo passam pelo "Swizzle", que troca X por Y.
 	LookPadAction = MakeAction(TEXT("IA_LookPad_Runtime"), EInputActionValueType::Axis2D);
@@ -649,6 +668,9 @@ void AROVPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 	Input->BindAction(LookPadAction, ETriggerEvent::Triggered, this, &AROVPawn::OnLookPad);
 	// Com o gatilho "Hold", Triggered só acontece depois de segurar o botão pelo tempo definido
 	Input->BindAction(ResetAction, ETriggerEvent::Triggered, this, &AROVPawn::OnResetHeld);
+	Input->BindAction(AutoHeadingAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleAutoHeading);
+	Input->BindAction(AutoDepthAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleAutoDepth);
+	Input->BindAction(AutoAltitudeAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleAutoAltitude);
 }
 
 void AROVPawn::NotifyControllerChanged()
@@ -752,4 +774,182 @@ void AROVPawn::OnLookPad(const FInputActionValue& Value)
 void AROVPawn::OnResetHeld()
 {
 	ResetToStart();
+}
+
+// =============================================================================
+// Pilotos automáticos
+// =============================================================================
+
+void AROVPawn::SetAutoHeading(bool bEnable)
+{
+	bAutoHeading = bEnable;
+	TargetHeadingDeg = FRotator::ClampAxis(GetActorRotation().Yaw);
+	bHeadingSettling = bEnable; // se estiver girando, primeiro freia e segura onde parar
+	HeadingPid.Reset();
+	UE_LOG(LogROV, Display, TEXT("Auto heading %s (alvo %.1f graus)"),
+		bEnable ? TEXT("LIGADO") : TEXT("DESLIGADO"), TargetHeadingDeg);
+}
+
+void AROVPawn::SetTargetHeading(float HeadingDeg)
+{
+	bAutoHeading = true;
+	TargetHeadingDeg = FRotator::ClampAxis(HeadingDeg);
+	bHeadingSettling = false; // alvo explícito: vai direto para ele
+	HeadingPid.Reset();
+	UE_LOG(LogROV, Display, TEXT("Auto heading LIGADO (alvo %.1f graus)"), TargetHeadingDeg);
+}
+
+void AROVPawn::OnToggleAutoHeading()
+{
+	SetAutoHeading(!bAutoHeading);
+}
+
+void AROVPawn::UpdateAutoHeading(float DeltaTime)
+{
+	// Sem auto: o yaw vem direto do piloto
+	YawCommand = PilotYaw;
+	if (!bAutoHeading)
+	{
+		return;
+	}
+
+	const float CurrentHeading = GetActorRotation().Yaw;
+
+	// Piloto mexendo no yaw: ele manda. Quando soltar, o auto primeiro freia o giro.
+	if (FMath::Abs(PilotYaw) > 0.05f)
+	{
+		bHeadingSettling = true;
+		HeadingPid.Reset();
+		return;
+	}
+
+	// "Segura onde parar" (mesma ideia do auto depth): só freia, e grava o rumo quando o giro quase parar
+	if (bHeadingSettling)
+	{
+		TargetHeadingDeg = FRotator::ClampAxis(CurrentHeading);
+		if (FMath::Abs(Telemetry.YawRateDegS) > 1.f) // graus/s
+		{
+			YawCommand = HeadingPid.Update(0.f, Telemetry.YawRateDegS, DeltaTime);
+			return;
+		}
+		bHeadingSettling = false;
+		HeadingPid.Reset();
+	}
+
+	// Erro pelo caminho mais curto: de 350° para 10° são +20°, e não -340°
+	const float ErrorDeg = FMath::FindDeltaAngleDegrees(CurrentHeading, TargetHeadingDeg);
+	YawCommand = HeadingPid.Update(ErrorDeg, Telemetry.YawRateDegS, DeltaTime);
+}
+
+void AROVPawn::UpdateAutopilots(float DeltaTime)
+{
+	UpdateAutoHeading(DeltaTime);
+	UpdateAutoVertical(DeltaTime);
+}
+
+void AROVPawn::UpdateAutoVertical(float DeltaTime)
+{
+	// Sem auto: o comando vem direto do piloto
+	TranslationCommand = PilotTranslation;
+	if (VerticalAuto == EROVVerticalAuto::Off)
+	{
+		return;
+	}
+
+	const bool bDepth = (VerticalAuto == EROVVerticalAuto::Depth);
+
+	// Altímetro sem fundo no alcance: não há o que seguir, o piloto continua no controle
+	if (!bDepth && Telemetry.AltitudeM < 0.f)
+	{
+		return;
+	}
+
+	// Piloto mexendo no heave: ele manda. Quando soltar, o auto primeiro freia (ver abaixo).
+	if (FMath::Abs(PilotTranslation.Z) > 0.05f)
+	{
+		bVerticalSettling = true;
+		DepthPid.Reset();
+		return;
+	}
+
+	// Velocidade vertical no mundo (+ = subindo), para o termo D
+	const float VerticalSpeedMs = Hull->IsSimulatingPhysics()
+		? Hull->GetPhysicsLinearVelocity().Z / 100.f
+		: DemoVelocityMs.Z;
+
+	// "Segura onde parar": logo depois de o piloto soltar (ou de ligar o auto com o ROV em movimento),
+	// o auto só FREIA, com erro zero (apenas o termo D age), e o alvo acompanha a posição.
+	// Quando a velocidade quase zera, o alvo fica gravado ali. Sem isso, o alvo seria o ponto
+	// em que o piloto soltou, e a inércia levaria o ROV além dele para depois voltar.
+	if (bVerticalSettling)
+	{
+		TargetDepthM = Telemetry.DepthM;
+		TargetAltitudeM = Telemetry.AltitudeM;
+		if (FMath::Abs(VerticalSpeedMs) > 0.05f) // m/s
+		{
+			TranslationCommand.Z = DepthPid.Update(0.f, VerticalSpeedMs, DeltaTime);
+			return;
+		}
+		bVerticalSettling = false;
+		DepthPid.Reset();
+	}
+
+	// Erro "para cima": quanto o ROV precisa subir (positivo) ou descer (negativo).
+	// A profundidade cresce para baixo, por isso o sinal é invertido em relação à altitude.
+	const float ErrorUpM = bDepth
+		? Telemetry.DepthM - TargetDepthM
+		: TargetAltitudeM - Telemetry.AltitudeM;
+
+	TranslationCommand.Z = DepthPid.Update(ErrorUpM, VerticalSpeedMs, DeltaTime);
+}
+
+void AROVPawn::SetAutoDepth(bool bEnable)
+{
+	VerticalAuto = bEnable ? EROVVerticalAuto::Depth : EROVVerticalAuto::Off;
+	TargetDepthM = Telemetry.DepthM;
+	bVerticalSettling = bEnable; // se estiver subindo/descendo, primeiro freia e segura onde parar
+	DepthPid.Reset();
+	UE_LOG(LogROV, Display, TEXT("Auto depth %s (alvo %.1f m)"), bEnable ? TEXT("LIGADO") : TEXT("DESLIGADO"), TargetDepthM);
+}
+
+void AROVPawn::SetTargetDepth(float DepthM)
+{
+	VerticalAuto = EROVVerticalAuto::Depth;
+	TargetDepthM = FMath::Max(0.f, DepthM);
+	bVerticalSettling = false; // alvo explícito: vai direto para ele
+	DepthPid.Reset();
+	UE_LOG(LogROV, Display, TEXT("Auto depth LIGADO (alvo %.1f m)"), TargetDepthM);
+}
+
+void AROVPawn::SetAutoAltitude(bool bEnable)
+{
+	if (bEnable && Telemetry.AltitudeM < 0.f)
+	{
+		UE_LOG(LogROV, Warning, TEXT("Auto altitude: fundo fora do alcance do altímetro"));
+		return;
+	}
+	VerticalAuto = bEnable ? EROVVerticalAuto::Altitude : EROVVerticalAuto::Off;
+	TargetAltitudeM = Telemetry.AltitudeM;
+	bVerticalSettling = bEnable; // se estiver subindo/descendo, primeiro freia e segura onde parar
+	DepthPid.Reset();
+	UE_LOG(LogROV, Display, TEXT("Auto altitude %s (alvo %.1f m)"), bEnable ? TEXT("LIGADO") : TEXT("DESLIGADO"), TargetAltitudeM);
+}
+
+void AROVPawn::SetTargetAltitude(float AltitudeM)
+{
+	VerticalAuto = EROVVerticalAuto::Altitude;
+	TargetAltitudeM = FMath::Max(0.5f, AltitudeM); // nunca mirar encostado no fundo
+	bVerticalSettling = false; // alvo explícito: vai direto para ele
+	DepthPid.Reset();
+	UE_LOG(LogROV, Display, TEXT("Auto altitude LIGADO (alvo %.1f m)"), TargetAltitudeM);
+}
+
+void AROVPawn::OnToggleAutoDepth()
+{
+	SetAutoDepth(VerticalAuto != EROVVerticalAuto::Depth);
+}
+
+void AROVPawn::OnToggleAutoAltitude()
+{
+	SetAutoAltitude(VerticalAuto != EROVVerticalAuto::Altitude);
 }

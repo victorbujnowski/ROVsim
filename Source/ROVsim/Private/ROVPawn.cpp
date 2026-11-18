@@ -284,6 +284,21 @@ float AROVPawn::GetSubmergedFraction() const
 	return FMath::Clamp((CenterDepth + HalfHeight) / (2.f * HalfHeight), 0.f, 1.f);
 }
 
+FVector AROVPawn::GetCurrentVelocityMs() const
+{
+	// Nós -> m/s, e direção -> vetor horizontal (+X = Norte, +Y = Leste, igual ao rumo do HUD)
+	const float SpeedMs = CurrentSpeedKnots * 0.514444f;
+	const float DirectionRad = FMath::DegreesToRadians(CurrentTowardDeg);
+	return FVector(FMath::Cos(DirectionRad), FMath::Sin(DirectionRad), 0.f) * SpeedMs;
+}
+
+void AROVPawn::SetCurrent(float SpeedKnots, float TowardDeg)
+{
+	CurrentSpeedKnots = FMath::Max(0.f, SpeedKnots);
+	CurrentTowardDeg = FRotator::ClampAxis(TowardDeg); // qualquer ângulo vira 0..360
+	UE_LOG(LogROV, Display, TEXT("Corrente: %.2f nós para %.0f graus"), CurrentSpeedKnots, CurrentTowardDeg);
+}
+
 /**
  * Modo SIMULADOR: soma todas as forças e momentos em SI e aplica no corpo.
  *
@@ -322,7 +337,10 @@ void AROVPawn::TickSimulator(float DeltaTime)
 	TorqueWorld += FVector::CrossProduct(LeverArmM, BuoyancyForce);
 
 	// --- 3) Hidrodinâmica no referencial do ROV ---
-	const FVector VelocityLocal = Orientation.UnrotateVector(Hull->GetPhysicsLinearVelocity() / CmPerM); // m/s
+	// O arrasto depende da velocidade RELATIVA À ÁGUA. Com corrente, a água também se move:
+	// um ROV parado no fundo com 1 nó de corrente "sente" 1 nó de água vindo contra ele.
+	const FVector RelativeVelocityWorld = Hull->GetPhysicsLinearVelocity() / CmPerM - GetCurrentVelocityMs(); // m/s
+	const FVector VelocityLocal = Orientation.UnrotateVector(RelativeVelocityWorld);
 	const FVector OmegaLocal = Orientation.UnrotateVector(Hull->GetPhysicsAngularVelocityInRadians());   // rad/s
 
 	FVector DragLocal = FVector::ZeroVector;

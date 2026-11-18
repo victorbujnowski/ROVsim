@@ -66,6 +66,15 @@ void AROVHUD::DrawHUD()
 	if (bSim)
 	{
 		Lines.Add(FString::Printf(TEXT("Massa %.0f kg      Submerso %3.0f%%"), T.MassKg, T.SubmergedFraction * 100.f));
+
+		// Corrente: só aparece quando existe
+		const FVector Current = ROV->GetCurrentVelocityMs();
+		if (!Current.IsNearlyZero())
+		{
+			// atan2(Y, X) devolve o ângulo do vetor: 0 = +X (Norte), 90 = +Y (Leste)
+			const float TowardDeg = FRotator::ClampAxis(FMath::RadiansToDegrees(FMath::Atan2(Current.Y, Current.X)));
+			Lines.Add(FString::Printf(TEXT("Corrente %.2f nos para %03.0f deg"), Current.Size() * MsToKnots, TowardDeg));
+		}
 	}
 
 	DrawPanel(Lines, 20.f, 20.f, bSim ? FLinearColor(0.4f, 1.f, 1.f) : FLinearColor(1.f, 0.85f, 0.3f));

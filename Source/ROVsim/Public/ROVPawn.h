@@ -88,6 +88,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "ROV")
 	void SetPilotCommand(FVector Translation, float Yaw);
 
+	/** Define a corrente: velocidade em nós e direção para onde a água vai (0 = Norte, 90 = Leste) */
+	UFUNCTION(BlueprintCallable, Category = "ROV")
+	void SetCurrent(float SpeedKnots, float TowardDeg);
+
+	/** Velocidade da corrente no mundo, em m/s */
+	FVector GetCurrentVelocityMs() const;
+
 	/** Volta o ROV para onde ele nasceu, parado e com os propulsores zerados */
 	UFUNCTION(BlueprintCallable, Category = "ROV")
 	void ResetToStart();
@@ -160,6 +167,14 @@ protected:
 
 	UPROPERTY(EditAnywhere, Category = "ROV|Agua")
 	float WaterDensity = 1025.f;       // kg/m³ - água do mar
+
+	/** Velocidade da corrente (1 nó = 0,514 m/s) */
+	UPROPERTY(EditAnywhere, Category = "ROV|Agua", meta = (ClampMin = "0.0"))
+	float CurrentSpeedKnots = 0.f;
+
+	/** Direção PARA ONDE a corrente vai (convenção oceanográfica). 0 = Norte (+X), 90 = Leste (+Y) */
+	UPROPERTY(EditAnywhere, Category = "ROV|Agua")
+	float CurrentTowardDeg = 0.f;
 
 	// =====================================================================
 	// Simulador (valores da ficha da MBARI; "estimado" = não publicado)

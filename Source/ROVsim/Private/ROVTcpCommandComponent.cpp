@@ -84,7 +84,7 @@ void UROVTcpCommandComponent::TickComponent(float DeltaTime, ELevelTick TickType
 		Client.Endpoint = Pending.Endpoint;
 
 		UE_LOG(LogROV, Display, TEXT("TCP: cliente conectado (%s)"), *Client.Endpoint.ToString());
-		SendLine(Client.Socket, TEXT("OK ROVsim pronto. Comandos: PING, STATUS, MODE SIM|DEMO, LIGHTS ON|OFF, CAMERA EXT|COCKPIT, RESET"));
+		SendLine(Client.Socket, TEXT("OK ROVsim pronto. Comandos: PING, STATUS, MODE SIM|DEMO, LIGHTS ON|OFF, CAMERA EXT|COCKPIT, RESET, CURRENT"));
 	}
 
 	// 2) Lê cada cliente. De trás para frente, para poder remover quem desconectou.
@@ -200,6 +200,23 @@ FString UROVTcpCommandComponent::ExecuteCommand(const FString& Line)
 			ROV->GetCameraMode() == EROVCameraMode::External ? TEXT("EXT") : TEXT("COCKPIT"),
 			T.DepthM, T.HeadingDeg);
 	}
+	if (Command == TEXT("CURRENT"))
+	{
+		// CURRENT <nós> <direção para onde vai, em graus>    ex.: CURRENT 1 0  |  CURRENT 0 desliga
+		float Knots = 0.f;
+		float Toward = 0.f;
+		const bool bValid = Words.Num() >= 2
+			&& FCString::IsNumeric(*Words[1]) && LexTryParseString(Knots, *Words[1])
+			&& (Words.Num() < 3 || (FCString::IsNumeric(*Words[2]) && LexTryParseString(Toward, *Words[2])));
+		if (!bValid || Knots < 0.f) // velocidade negativa não existe: para inverter, use a direção + 180
+		{
+			return TEXT("ERR use CURRENT <nos> <direcao_graus>  (ex.: CURRENT 1.5 90)");
+		}
+
+		ROV->SetCurrent(Knots, Toward);
+		return FString::Printf(TEXT("OK CURRENT %.2f %.0f"), Knots, FRotator::ClampAxis(Toward));
+	}
+
 
 	return FString::Printf(TEXT("ERR comando desconhecido: %s"), *Command);
 }

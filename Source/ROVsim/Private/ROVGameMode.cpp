@@ -119,8 +119,21 @@ void AROVGameMode::Tick(float DeltaSeconds)
 		{ 83.f, [&] { ROV->SetActorRotation(FRotator(15.f, ROV->GetActorRotation().Yaw, 20.f), ETeleportType::TeleportPhysics);
 		              LogTelemetry(TEXT("SIM inclinado")); } },
 		{ 84.5f, [&] { TakeScreenshot(TEXT("08_sim_endireitando")); } },
-		{ 98.f, [&] { LogTelemetry(TEXT("SIM estabilizou")); UE_LOG(LogROV, Display, TEXT("SMOKE TEST concluído"));
-		              FGenericPlatformMisc::RequestExit(false, TEXT("ROVSmokeTest")); } },
+		{ 98.f, [&] { LogTelemetry(TEXT("SIM estabilizou")); } },
+		// Corrente: 1 nó para o Norte, sem comando. Depois de 60 s o ROV tem que derivar junto com a água.
+		{ 99.f, [&] { ROV->SetPilotCommand(FVector::ZeroVector, 0.f); ROV->SetCurrent(1.f, 0.f);
+					  LogTelemetry(TEXT("SIM corrente on")); } },
+		{ 159.f, [&] {
+			const FVector GroundVelocity = ROV->GetVelocity() / 100.f;   // m/s em relação ao fundo
+			const FVector Expected = ROV->GetCurrentVelocityMs();
+			const float Error = FVector2D(GroundVelocity - Expected).Size(); // só no plano horizontal
+			const bool bPassed = Error < 0.05f;                             // tolerância de 5 cm/s
+			UE_LOG(LogROV, Display, TEXT("SMOKE CHECK corrente: %s (deriva %.3f m/s, esperado %.3f m/s, erro %.3f m/s)"),
+				bPassed ? TEXT("PASSOU") : TEXT("FALHOU"), FVector2D(GroundVelocity).Size(), Expected.Size(), Error);
+			ROV->SetCurrent(0.f, 0.f);
+		} },
+		{ 160.f, [&] { UE_LOG(LogROV, Display, TEXT("SMOKE TEST concluído"));
+					   FGenericPlatformMisc::RequestExit(false, TEXT("ROVSmokeTest")); } },
 	};
 
 	while (SmokeStep < Script.Num() && T >= Script[SmokeStep].Time)

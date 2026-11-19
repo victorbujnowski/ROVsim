@@ -136,6 +136,14 @@ AROVPawn::AROVPawn()
 	// Limitar o I a 10% dá folga para isso sem deixá-lo acumular durante uma descida longa.
 	DepthPid.IntegralLimit = 0.1f;
 
+	// Station keeping: saída em frações de MaxThrust.Y (4000 N). Limite 1,6 = 6375 N, o empuxo de surge.
+	// O I pode chegar a 0,8 (3200 N): 1 nó de corrente de lado pede ~1400 N, de frente ~800 N.
+	for (FROVPid* Pid : { &NorthPid, &EastPid })
+	{
+		Pid->OutputLimit = 1.6f;
+		Pid->IntegralLimit = 0.8f;
+	}
+
 	// Link de rede: componente sem posição no espaço, por isso não tem SetupAttachment
 	UdpLink = CreateDefaultSubobject<UROVUdpLinkComponent>(TEXT("UdpLink"));
 	TcpCommands = CreateDefaultSubobject<UROVTcpCommandComponent>(TEXT("TcpCommands"));
@@ -254,6 +262,16 @@ void AROVPawn::ResetToStart()
 	}
 	LastCameraYaw = GetActorRotation().Yaw;
 
+	// O salto confundiria o filtro de ondas; e o station keeping passa a segurar o ponto inicial
+	for (FROVNotchFilter* Filter : { &WaveFilterPosN, &WaveFilterPosE, &WaveFilterVelN, &WaveFilterVelE })
+	{
+		Filter->Reset();
+	}
+	if (bPositionHold)
+	{
+		SetTargetPosition(StartTransform.GetLocation().X / ROVUnits::CmPerM, StartTransform.GetLocation().Y / ROVUnits::CmPerM);
+	}
+
 	UE_LOG(LogROV, Display, TEXT("ROV reiniciado na posição inicial"));
 }
 
@@ -288,8 +306,10 @@ void AROVPawn::Tick(float DeltaTime)
 float AROVPawn::GetSubmergedFraction() const
 {
 	// 0 = fora d'água, 1 = totalmente submerso (aproximação pela altura do centro da caixa)
+	// Com swell, a superfície sobe e desce (η): perto da superfície o casco sai e entra na água
+	const FVector Location = Hull->GetComponentLocation();
 	const float HalfHeight = Hull->GetScaledBoxExtent().Z;
-	const float CenterDepth = WaterSurfaceZ - Hull->GetComponentLocation().Z;
+	const float CenterDepth = WaterSurfaceZ + GetSwellElevationM(Location) * ROVUnits::CmPerM - Location.Z;
 	return FMath::Clamp((CenterDepth + HalfHeight) / (2.f * HalfHeight), 0.f, 1.f);
 }
 
@@ -306,6 +326,112 @@ void AROVPawn::SetCurrent(float SpeedKnots, float TowardDeg)
 	CurrentSpeedKnots = FMath::Max(0.f, SpeedKnots);
 	CurrentTowardDeg = FRotator::ClampAxis(TowardDeg); // qualquer ângulo vira 0..360
 	UE_LOG(LogROV, Display, TEXT("Corrente: %.2f nós para %.0f graus"), CurrentSpeedKnots, CurrentTowardDeg);
+}
+
+// =============================================================================
+// Swell (teoria linear de ondas de Airy, águas profundas)
+//
+//   ω = 2π/T          frequência angular (rad/s)
+//   k = ω²/g          número de onda (rad/m)  ->  λ = 2π/k = g·T²/2π
+//   a = H/2           amplitude
+//   θ = k·(x·dx + y·dy) − ω·t     fase no ponto (dx, dy = direção de propagação)
+//
+// Cada partícula de água anda em CÍRCULO (órbita) de raio a·e^(−k·z): a velocidade
+// horizontal é a·ω·e^(−kz)·cos θ e a vertical a·ω·e^(−kz)·sin θ. O fator e^(−kz) faz
+// a onda "sumir" com a profundidade: a meio comprimento de onda já sobra só 4%.
+// "Águas profundas" vale quando o fundo está a mais de λ/2 (fora isso as órbitas viram elipses).
+// =============================================================================
+
+namespace ROVSwell
+{
+	/** Número de onda k = ω²/g, em rad/m */
+	float WaveNumber(float PeriodS, float Gravity)
+	{
+		const float Omega = 2.f * PI / PeriodS;
+		return Omega * Omega / Gravity;
+	}
+}
+
+void AROVPawn::SetSwell(float HeightM, float PeriodS, float FromDeg)
+{
+	SwellPeriodS = FMath::Clamp(PeriodS, 2.f, 30.f);
+	// Uma onda real quebra quando fica íngreme demais: altura máxima ≈ 1/7 do comprimento (limite de Stokes)
+	const float MaxHeight = GetSwellWavelengthM() / 7.f;
+	SwellHeightM = FMath::Clamp(HeightM, 0.f, MaxHeight);
+	SwellFromDeg = FRotator::ClampAxis(FromDeg);
+	UE_LOG(LogROV, Display, TEXT("Swell: %.2f m, %.1f s, vindo de %.0f graus (λ %.0f m)"),
+		SwellHeightM, SwellPeriodS, SwellFromDeg, GetSwellWavelengthM());
+}
+
+float AROVPawn::GetSwellWavelengthM() const
+{
+	const float Gravity = FMath::Abs(GetWorld() ? GetWorld()->GetGravityZ() : -980.f) / ROVUnits::CmPerM;
+	return 2.f * PI / ROVSwell::WaveNumber(SwellPeriodS, Gravity);
+}
+
+float AROVPawn::GetSwellAttenuation(float DepthM) const
+{
+	const float K = 2.f * PI / GetSwellWavelengthM();
+	return FMath::Exp(-K * FMath::Max(0.f, DepthM)); // acima da superfície média, sem amplificar
+}
+
+void AROVPawn::GetSwellKinematics(const FVector& LocationCm, FVector& OutVelocityMs, FVector& OutAccelerationMs2) const
+{
+	OutVelocityMs = FVector::ZeroVector;
+	OutAccelerationMs2 = FVector::ZeroVector;
+	if (!IsSwellOn() || !GetWorld())
+	{
+		return;
+	}
+
+	const float Omega = 2.f * PI / SwellPeriodS;
+	const float K = 2.f * PI / GetSwellWavelengthM();
+	const float Amplitude = 0.5f * SwellHeightM;
+
+	// "De onde vem" + 180° = "para onde vai" (direção de propagação)
+	const float FromRad = FMath::DegreesToRadians(SwellFromDeg);
+	const FVector2D Direction(-FMath::Cos(FromRad), -FMath::Sin(FromRad));
+
+	const FVector2D PositionM(LocationCm.X / ROVUnits::CmPerM, LocationCm.Y / ROVUnits::CmPerM);
+	const float DepthM = (WaterSurfaceZ - LocationCm.Z) / ROVUnits::CmPerM;
+	const float Theta = K * FVector2D::DotProduct(PositionM, Direction) - Omega * GetWorld()->GetTimeSeconds();
+
+	const float Speed = Amplitude * Omega * GetSwellAttenuation(DepthM); // raio da órbita × ω
+	const float CosT = FMath::Cos(Theta);
+	const float SinT = FMath::Sin(Theta);
+
+	// Velocidade orbital: horizontal na direção de propagação, vertical defasada 90°
+	OutVelocityMs = FVector(Direction.X * Speed * CosT, Direction.Y * Speed * CosT, Speed * SinT);
+	// Aceleração = derivada no tempo (θ diminui com t, por isso dθ/dt = −ω)
+	OutAccelerationMs2 = FVector(Direction.X * Speed * Omega * SinT, Direction.Y * Speed * Omega * SinT, -Speed * Omega * CosT);
+
+	// + aceleração CONVECTIVA (u·∇)u: a partícula de água muda de lugar dentro da onda, e lá a velocidade
+	// é outra. Em onda de Airy isso vale ∇(½|u|²) = k·|u|² para CIMA (|u| só depende da profundidade).
+	// Sem este termo, o ROV que acompanha a órbita sente em média uma força para baixo e afunda
+	// devagar - coisa que a água de verdade não faz (o movimento vertical médio é zero).
+	OutAccelerationMs2.Z += K * Speed * Speed;
+}
+
+float AROVPawn::GetSwellElevationM(const FVector& LocationCm) const
+{
+	if (!IsSwellOn() || !GetWorld())
+	{
+		return 0.f;
+	}
+	const float Omega = 2.f * PI / SwellPeriodS;
+	const float K = 2.f * PI / GetSwellWavelengthM();
+	const float FromRad = FMath::DegreesToRadians(SwellFromDeg);
+	const FVector2D Direction(-FMath::Cos(FromRad), -FMath::Sin(FromRad));
+	const FVector2D PositionM(LocationCm.X / ROVUnits::CmPerM, LocationCm.Y / ROVUnits::CmPerM);
+	const float Theta = K * FVector2D::DotProduct(PositionM, Direction) - Omega * GetWorld()->GetTimeSeconds();
+	return 0.5f * SwellHeightM * FMath::Cos(Theta);
+}
+
+FVector AROVPawn::GetWaterVelocityMs(const FVector& LocationCm) const
+{
+	FVector SwellVelocity, SwellAcceleration;
+	GetSwellKinematics(LocationCm, SwellVelocity, SwellAcceleration);
+	return GetCurrentVelocityMs() + SwellVelocity;
 }
 
 /**
@@ -348,7 +474,10 @@ void AROVPawn::TickSimulator(float DeltaTime)
 	// --- 3) Hidrodinâmica no referencial do ROV ---
 	// O arrasto depende da velocidade RELATIVA À ÁGUA. Com corrente, a água também se move:
 	// um ROV parado no fundo com 1 nó de corrente "sente" 1 nó de água vindo contra ele.
-	const FVector RelativeVelocityWorld = Hull->GetPhysicsLinearVelocity() / CmPerM - GetCurrentVelocityMs(); // m/s
+	// Com swell, a água ainda gira em órbitas: soma-se a velocidade orbital no ponto onde o ROV está.
+	FVector SwellVelocityMs, SwellAccelerationWorld;
+	GetSwellKinematics(Hull->GetComponentLocation(), SwellVelocityMs, SwellAccelerationWorld);
+	const FVector RelativeVelocityWorld = Hull->GetPhysicsLinearVelocity() / CmPerM - (GetCurrentVelocityMs() + SwellVelocityMs); // m/s
 	const FVector VelocityLocal = Orientation.UnrotateVector(RelativeVelocityWorld);
 	const FVector OmegaLocal = Orientation.UnrotateVector(Hull->GetPhysicsAngularVelocityInRadians());   // rad/s
 
@@ -367,6 +496,21 @@ void AROVPawn::TickSimulator(float DeltaTime)
 	// -> Tz = x_CP * Fy. Com o CP atrás do centro de massa (x negativo), a proa gira para dentro da corrente.
 	DampingTorqueLocal.Z += (LateralCenterOfPressureX / CmPerM) * DragLocal.Y;
 
+	// Inércia da água acelerando (termo de inércia da equação de Morison). A corrente é constante,
+	// mas a água do swell ACELERA: para isso, a pressão em volta do ROV muda de um lado para o outro,
+	// e essa diferença empurra o casco (força de Froude-Krylov = ρ·V·a_água). A água que o ROV
+	// arrasta junto (massa adicional) também é acelerada: + m_a·a_água. Sem este termo, só o
+	// arrasto puxaria o ROV, e ele ficaria quase parado enquanto a água oscila em volta - errado:
+	// um corpo com flutuação quase neutra se move junto com a água da onda.
+	const FVector SwellAccelerationLocal = Orientation.UnrotateVector(SwellAccelerationWorld);
+	FVector WaveInertiaLocal = FVector::ZeroVector;
+	for (int32 Axis = 0; Axis < 3; ++Axis)
+	{
+		const double FroudeKrylov = WaterDensity * DisplacedVolume;   // kg (massa da água deslocada)
+		const double AddedMass = AddedMassRatio[Axis] * Mass;         // kg
+		WaveInertiaLocal[Axis] = (FroudeKrylov + AddedMass) * SwellAccelerationLocal[Axis] * Submerged; // N
+	}
+
 	// --- 4) Propulsores, com atraso de resposta (filtro de 1ª ordem) ---
 	const float Alpha = 1.f - FMath::Exp(-DeltaTime / FMath::Max(ThrusterTimeConstant, KINDA_SMALL_NUMBER));
 	FilteredThrust += (TranslationCommand - FilteredThrust) * Alpha;
@@ -379,7 +523,7 @@ void AROVPawn::TickSimulator(float DeltaTime)
 	// --- 5) Soma no referencial local e divide pela massa/inércia adicional ---
 	// Acelerar um corpo na água também acelera a água em volta dele: na prática a massa
 	// "efetiva" é maior. Dividir a força por (1 + razão) dá a mesma aceleração que m + m_a.
-	FVector ForceLocal = Orientation.UnrotateVector(ForceWorld) + DragLocal + ThrustLocal;
+	FVector ForceLocal = Orientation.UnrotateVector(ForceWorld) + DragLocal + WaveInertiaLocal + ThrustLocal;
 	FVector TorqueLocal = Orientation.UnrotateVector(TorqueWorld) + DampingTorqueLocal + YawTorqueLocal;
 	for (int32 Axis = 0; Axis < 3; ++Axis)
 	{
@@ -615,6 +759,9 @@ void AROVPawn::BuildInputMappings()
 	Map(AutoDepthAction, EKeys::Gamepad_RightThumbstick, false);
 	AutoAltitudeAction = MakeAction(TEXT("IA_AutoAltitude_Runtime"), EInputActionValueType::Boolean);
 	Map(AutoAltitudeAction, EKeys::K, false);
+	// Station keeping: P no teclado
+	AutoPositionAction = MakeAction(TEXT("IA_AutoPosition_Runtime"), EInputActionValueType::Boolean);
+	Map(AutoPositionAction, EKeys::P, false);
 
 	// D-pad: gira a câmera. Direita/esquerda já caem no eixo X;
 	// cima/baixo passam pelo "Swizzle", que troca X por Y.
@@ -678,6 +825,7 @@ void AROVPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 	Input->BindAction(AutoHeadingAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleAutoHeading);
 	Input->BindAction(AutoDepthAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleAutoDepth);
 	Input->BindAction(AutoAltitudeAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleAutoAltitude);
+	Input->BindAction(AutoPositionAction, ETriggerEvent::Started, this, &AROVPawn::OnToggleAutoPosition);
 }
 
 void AROVPawn::NotifyControllerChanged()
@@ -851,7 +999,8 @@ void AROVPawn::UpdateAutoHeading(float DeltaTime)
 void AROVPawn::UpdateAutopilots(float DeltaTime)
 {
 	UpdateAutoHeading(DeltaTime);
-	UpdateAutoVertical(DeltaTime);
+	UpdateAutoVertical(DeltaTime);   // começa copiando o comando do piloto; mexe só no heave
+	UpdateAutoPosition(DeltaTime);   // depois dele: mexe só em surge e sway
 }
 
 void AROVPawn::UpdateAutoVertical(float DeltaTime)
@@ -989,4 +1138,116 @@ void AROVPawn::OnToggleAutoDepth()
 void AROVPawn::OnToggleAutoAltitude()
 {
 	SetAutoAltitude(VerticalAuto != EROVVerticalAuto::Altitude);
+}
+
+void AROVPawn::OnToggleAutoPosition()
+{
+	SetPositionHold(!bPositionHold);
+}
+
+// =============================================================================
+// Station keeping (manter posição)
+//
+// Mesma receita dos outros autos, agora no plano horizontal:
+//   1) ONDE ESTOU: aqui é a posição real do simulador. Num ROV de verdade viria do USBL (posição
+//      acústica medida pelo navio) somado ao DVL (velocidade sobre o fundo).
+//   2) FILTRO DE ONDAS: tira da medida o vaivém do swell (notch na frequência da onda).
+//   3) PID por eixo do mundo (Norte, Leste): o I acumula até igualar a força da corrente.
+//   4) Gira a força pedida do mundo para o casco e divide pelo empuxo de cada eixo.
+// =============================================================================
+
+void AROVPawn::SetPositionHold(bool bEnable)
+{
+	bPositionHold = bEnable;
+	TargetPositionM = FilteredPositionM;
+	bPositionSettling = bEnable; // se estiver andando, primeiro freia e segura onde parar
+	PositionSettlingTime = 0.f;
+	NorthPid.Reset();
+	EastPid.Reset();
+	UE_LOG(LogROV, Display, TEXT("Station keeping %s"), bEnable ? TEXT("LIGADO") : TEXT("DESLIGADO"));
+}
+
+void AROVPawn::SetTargetPosition(float NorthM, float EastM)
+{
+	bPositionHold = true;
+	TargetPositionM = FVector2D(NorthM, EastM);
+	bPositionSettling = false; // alvo explícito: vai direto para ele
+	NorthPid.Reset();
+	EastPid.Reset();
+	UE_LOG(LogROV, Display, TEXT("Station keeping LIGADO (alvo N %.1f m, L %.1f m)"), NorthM, EastM);
+}
+
+FVector2D AROVPawn::GetPositionOffsetM() const
+{
+	const FVector Location = GetActorLocation() / ROVUnits::CmPerM;
+	return FVector2D(Location.X, Location.Y) - TargetPositionM;
+}
+
+EROVAutoPhase AROVPawn::GetPositionPhase() const
+{
+	if (!bPositionHold)
+	{
+		return EROVAutoPhase::Off;
+	}
+	if (FVector2D(PilotTranslation.X, PilotTranslation.Y).Size() > 0.05f)
+	{
+		return EROVAutoPhase::Adjusting;
+	}
+	return bPositionSettling ? EROVAutoPhase::Braking : EROVAutoPhase::Holding;
+}
+
+void AROVPawn::UpdateAutoPosition(float DeltaTime)
+{
+	using namespace ROVUnits;
+
+	// 1) e 2) Medida filtrada. Roda SEMPRE (mesmo com o auto desligado), para o filtro já estar
+	// "aquecido" quando o piloto ligar. A frequência do notch vem do swell configurado; num DP real
+	// ela é estimada do próprio movimento medido (o pico do espectro das ondas).
+	const FVector Location = GetActorLocation() / CmPerM;
+	const FVector Velocity = Hull->IsSimulatingPhysics() ? Hull->GetPhysicsLinearVelocity() / CmPerM : DemoVelocityMs;
+	const double WaveOmega = IsSwellOn() ? 2.0 * PI / SwellPeriodS : 0.0;
+	FilteredPositionM.X = WaveFilterPosN.Process(Location.X, WaveOmega, DeltaTime);
+	FilteredPositionM.Y = WaveFilterPosE.Process(Location.Y, WaveOmega, DeltaTime);
+	FilteredVelocityMs.X = WaveFilterVelN.Process(Velocity.X, WaveOmega, DeltaTime);
+	FilteredVelocityMs.Y = WaveFilterVelE.Process(Velocity.Y, WaveOmega, DeltaTime);
+
+	if (!bPositionHold)
+	{
+		return;
+	}
+
+	// Piloto mexendo em surge ou sway: ele manda. Quando soltar, o auto primeiro freia.
+	if (FVector2D(PilotTranslation.X, PilotTranslation.Y).Size() > 0.05f)
+	{
+		bPositionSettling = true;
+		PositionSettlingTime = 0.f;
+		NorthPid.Reset();
+		EastPid.Reset();
+		return;
+	}
+
+	// 3) PID no mundo. Durante a frenagem o erro é zero (só o D age) e o alvo acompanha a posição.
+	FVector2D ErrorM = TargetPositionM - FilteredPositionM;
+	if (bPositionSettling)
+	{
+		TargetPositionM = FilteredPositionM;
+		ErrorM = FVector2D::ZeroVector;
+		PositionSettlingTime += DeltaTime;
+		// Parou (sem contar o vaivém da onda) ou já freou 3 s. Com corrente, só o D empata com ela
+		// numa velocidade que nunca chega a zero; a partir daí o P e o I trazem o ROV de volta.
+		if (FilteredVelocityMs.Size() < 0.05f || PositionSettlingTime > 3.f)
+		{
+			bPositionSettling = false;
+			NorthPid.Reset();
+			EastPid.Reset();
+		}
+	}
+	const float NorthCommand = NorthPid.Update(ErrorM.X, FilteredVelocityMs.X, DeltaTime);
+	const float EastCommand = EastPid.Update(ErrorM.Y, FilteredVelocityMs.Y, DeltaTime);
+
+	// 4) Força pedida no mundo (N) -> referencial do casco. Só o rumo importa (pitch e roll ficam perto de zero).
+	const FVector ForceWorldN = FVector(NorthCommand, EastCommand, 0.f) * MaxThrust.Y;
+	const FVector ForceBodyN = FRotator(0.f, GetActorRotation().Yaw, 0.f).UnrotateVector(ForceWorldN);
+	TranslationCommand.X = FMath::Clamp(ForceBodyN.X / MaxThrust.X, -1.f, 1.f);
+	TranslationCommand.Y = FMath::Clamp(ForceBodyN.Y / MaxThrust.Y, -1.f, 1.f);
 }

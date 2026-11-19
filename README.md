@@ -20,6 +20,7 @@ gamepad) or from outside over UDP/TCP, and it emits NMEA sensor data like a real
 | `H` | L3 | Auto heading on / off |
 | `J` | R3 | Auto depth on / off |
 | `K` | | Auto altitude on / off |
+| `P` | | Station keeping (position hold) on / off |
 | hold `R` | hold B | Reset to the start position |
 
 Gamepad sticks use a 15% dead zone and a quadratic response curve.
@@ -38,6 +39,7 @@ Gamepad sticks use a 15% dead zone and a quadratic response curve.
 | Added mass | 0.4 / 0.7 / 0.9 of the mass (surge / sway / heave), 0.5 for inertia |
 | Thrusters | Surge 650 kgf, heave 550 kgf (MBARI), 0.25 s first-order response, lose thrust out of the water |
 | Current | Speed (knots) and direction it flows **toward** (0° = North); lateral force acts 30 cm aft of the CG, so a cross current yaws the bow into it (weathervane) |
+| Swell | Linear (Airy) deep-water waves: height, period and direction it comes **from** (0° = North — the opposite of the current convention). λ = gT²/2π; the orbital water velocity a·ω·e^(−kz) is added to the current for drag, plus the Morison inertia force (Froude-Krylov + added mass) from the water acceleration, so a near-neutral ROV rides the orbits; the surface elevation η changes the submerged fraction near the surface. Height capped at λ/7 (breaking limit) |
 
 Resulting top speeds: surge ≈ 1.6 m/s (3.2 kn), heave ≈ 1.2 m/s, yaw ≈ 29°/s — in line with a real
 work-class ROV. A 3 kn current (1.54 m/s) leaves the vehicle at its limit.
@@ -53,6 +55,12 @@ level attitude and swept collision against the seabed.
 - Pilot input moves the target (as in commercial ROVs and ArduSub); after release the autopilot
   brakes and latches the target where the vehicle stops. The HUD shows the phase:
   *ajustando → freando → segurando* (adjusting → braking → holding).
+- **Station keeping** (position hold): one PID per world axis (North, East) with an integral that
+  learns the current force; the requested force is rotated into the hull frame and split between
+  surge and sway thrust. A **wave filter** (2nd-order notch at the swell frequency) removes the wave
+  motion from the measured position and velocity, so the thrusters fight the current but let the
+  vehicle ride the wave orbits instead of chasing every wave. Position reference is the simulator's
+  ground truth (a real ROV would use USBL + DVL).
 - Tested to ±2° heading and ±0.2 m depth/altitude with a 1 kn cross current.
 
 ## Network interfaces
@@ -61,7 +69,7 @@ level attitude and swept collision against the seabed.
 |---|---|---|---|
 | 5000 | UDP, JSON | in | Pilot commands `{"type":"cmd","seq":n,"surge","sway","heave","yaw"}` with a 0.5 s watchdog |
 | 5001 | UDP, JSON | out | Telemetry at 10 Hz (position, depth, altitude, attitude, velocities) |
-| 5002 | TCP, text lines | in/out | Commands with replies: `PING`, `STATUS`, `MODE SIM\|DEMO`, `LIGHTS ON\|OFF`, `CAMERA EXT\|COCKPIT`, `RESET`, `CURRENT <kn> <deg>`, `AUTO HEADING\|DEPTH\|ALT ON\|OFF\|<value>`, `AUTO OFF` |
+| 5002 | TCP, text lines | in/out | Commands with replies: `PING`, `STATUS`, `MODE SIM\|DEMO`, `LIGHTS ON\|OFF`, `CAMERA EXT\|COCKPIT`, `RESET`, `CURRENT <kn> <deg>`, `SWELL <height_m> <period_s> <from_deg>` (`SWELL 0` = off), `AUTO HEADING\|DEPTH\|ALT ON\|OFF\|<value>`, `AUTO POS ON\|OFF\|<north_m> <east_m>`, `AUTO OFF` |
 
 ### Emulated sensors (NMEA 0183)
 
@@ -92,7 +100,7 @@ dotnet run            # then open http://localhost:8080   (options: --sim <host>
 ```
 
 - Navigation (compass with autopilot target, artificial horizon), velocities, thruster bars, autopilot
-  phase and deviation, current, 60 s depth/heading charts
+  phase and deviation, current and swell (with on/off switches), 60 s depth/heading charts
 - Every NMEA sensor received by the bridge, with measured rate, checksum failures and decoded fields
 - Command buttons/forms and a console for the TCP command protocol (replies shown in green/red)
 - Piloting from the browser with the keyboard or a gamepad (Gamepad API, BlueROV2 layout), sent as UDP
@@ -113,8 +121,9 @@ The bridge binds UDP 5001 and 10001–10004, so the PowerShell monitors cannot r
 
 | File | Purpose |
 |---|---|
-| `ROVPawn` | Vehicle: components, both control modes, physics, current, autopilots, cameras, input |
+| `ROVPawn` | Vehicle: components, both control modes, physics, current, swell, autopilots, cameras, input |
 | `ROVPid.h` | PID controller (saturation, anti-windup, derivative on measurement) |
+| `ROVNotch.h` | Notch (band-stop) filter used as the station-keeping wave filter |
 | `ROVNmea.h` | NMEA sentence builder and checksum validation |
 | `ROVUdpLinkComponent` | UDP command input (own receive thread) and telemetry output |
 | `ROVTcpCommandComponent` | TCP command server with line framing |
@@ -133,9 +142,12 @@ UnrealEditor-Cmd.exe ROVsim.uproject -ExecCmds="Automation RunTests ROVsim" -Tes
 
 - `ROVsim.PID`: saturation, P-only steady-state error, PID removes it
 - `ROVsim.NMEA`: checksum against a reference sentence, validation of corrupted sentences
+- `ROVsim.Notch`: wave filter removes a 10 s wave, passes slow drift and constants
 
-**Smoke test** (runs the game ~4 minutes and exits): flies both modes and both cameras, checks seabed
-collision, pitch/roll stability, current drift and the three autopilots, logs telemetry (`LogROV`)
+**Smoke test** (runs the game ~7.5 minutes and exits): flies both modes and both cameras, checks seabed
+collision, pitch/roll stability, current drift, the three autopilots, the swell (heave period and
+e^(−kz) decay between ~34 m and ~8 m deep) and station keeping (1 kn cross current + 2 m swell at
+15 m: mean offset, peak offset and thruster activity), logs telemetry (`LogROV`)
 and saves screenshots to `Saved/Screenshots/WindowsEditor/SmokeTest/`:
 
 ```

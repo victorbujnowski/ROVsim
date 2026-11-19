@@ -78,6 +78,7 @@ button:hover { background: #18404f; }
 button.danger { border-color: #6b2b2b; background: #3a1717; }
 form.row { display: grid; grid-template-columns: 150px 1fr auto; gap: 6px; align-items: center; margin-bottom: 6px; }
 form.row.current { grid-template-columns: 150px 1fr 1fr auto; }
+form.row.swell { grid-template-columns: 150px 1fr 1fr 1fr auto; }
 
 /* Botão liga/desliga: verde quando ligado; o texto mostra o estado atual */
 button.switch { text-align: left; font-weight: 600; color: var(--muted); }

@@ -84,7 +84,7 @@ void UROVTcpCommandComponent::TickComponent(float DeltaTime, ELevelTick TickType
 		Client.Endpoint = Pending.Endpoint;
 
 		UE_LOG(LogROV, Display, TEXT("TCP: cliente conectado (%s)"), *Client.Endpoint.ToString());
-		SendLine(Client.Socket, TEXT("OK ROVsim pronto. Comandos: PING, STATUS, MODE SIM|DEMO, LIGHTS ON|OFF, CAMERA EXT|COCKPIT, RESET, CURRENT, AUTO"));
+		SendLine(Client.Socket, TEXT("OK ROVsim pronto. Comandos: PING, STATUS, MODE SIM|DEMO, LIGHTS ON|OFF, CAMERA EXT|COCKPIT, RESET, CURRENT, SWELL, AUTO"));
 	}
 
 	// 2) Lê cada cliente. De trás para frente, para poder remover quem desconectou.
@@ -217,6 +217,41 @@ FString UROVTcpCommandComponent::ExecuteCommand(const FString& Line)
 		return FString::Printf(TEXT("OK CURRENT %.2f %.0f"), Knots, FRotator::ClampAxis(Toward));
 	}
 
+	if (Command == TEXT("SWELL"))
+	{
+		// SWELL <altura_m> <periodo_s> <de_graus>    ex.: SWELL 2 10 0  |  SWELL 0 desliga
+		// A direção é DE ONDE as ondas vêm (a da corrente é para onde a água vai).
+		auto ParseNumber = [&Words](int32 Index, float& Out)
+		{
+			return Words.IsValidIndex(Index) && FCString::IsNumeric(*Words[Index]) && LexTryParseString(Out, *Words[Index]);
+		};
+
+		float Height = 0.f;
+		if (!ParseNumber(1, Height) || Height < 0.f)
+		{
+			return TEXT("ERR use SWELL <altura_m> <periodo_s> <de_graus>  (ex.: SWELL 2 10 270)  ou  SWELL 0");
+		}
+		if (Height == 0.f)
+		{
+			ROV->SetSwell(0.f, ROV->GetSwellPeriodS(), ROV->GetSwellFromDeg());
+			return TEXT("OK SWELL OFF");
+		}
+
+		float Period = 0.f;
+		float From = 0.f;
+		const bool bValid = ParseNumber(2, Period) && Period > 0.f
+			&& (Words.Num() < 4 || (ParseNumber(3, From) && From >= 0.f));
+		if (!bValid)
+		{
+			return TEXT("ERR use SWELL <altura_m> <periodo_s> <de_graus>  (periodo > 0, sem valores negativos, ponto decimal)");
+		}
+
+		ROV->SetSwell(Height, Period, From);
+		// Responde com o que foi APLICADO: a altura pode ter sido limitada pela inclinação máxima da onda
+		return FString::Printf(TEXT("OK SWELL %.2f %.1f %.0f  (comprimento %.0f m)"),
+			ROV->GetSwellHeightM(), ROV->GetSwellPeriodS(), ROV->GetSwellFromDeg(), ROV->GetSwellWavelengthM());
+	}
+
 	if (Command == TEXT("AUTO"))
 	{
 		// AUTO HEADING|DEPTH|ALT  ON|OFF|<valor>     ou     AUTO OFF (desliga todos)
@@ -224,6 +259,7 @@ FString UROVTcpCommandComponent::ExecuteCommand(const FString& Line)
 		{
 			ROV->SetAutoHeading(false);
 			ROV->SetAutoDepth(false); // desliga o vertical (profundidade ou altitude)
+			ROV->SetPositionHold(false);
 			return TEXT("OK AUTO OFF");
 		}
 
@@ -268,7 +304,21 @@ FString UROVTcpCommandComponent::ExecuteCommand(const FString& Line)
 			}
 		}
 
-		return TEXT("ERR use AUTO HEADING|DEPTH|ALT ON|OFF|<valor>  ou  AUTO OFF");
+		else if (Argument == TEXT("POS"))
+		{
+			// AUTO POS ON|OFF   ou   AUTO POS <norte_m> <leste_m>  (coordenadas do mapa, as mesmas da telemetria "pos")
+			if (Value == TEXT("ON"))  { ROV->SetPositionHold(true);  return TEXT("OK AUTO POS ON"); }
+			if (Value == TEXT("OFF")) { ROV->SetPositionHold(false); return TEXT("OK AUTO POS OFF"); }
+			float East = 0.f;
+			if (bNumber && Words.Num() > 3 && FCString::IsNumeric(*Words[3]) && LexTryParseString(East, *Words[3]))
+			{
+				ROV->SetTargetPosition(Number, East);
+				const FVector2D Target = ROV->GetTargetPositionM();
+				return FString::Printf(TEXT("OK AUTO POS %.1f %.1f"), Target.X, Target.Y);
+			}
+		}
+
+		return TEXT("ERR use AUTO HEADING|DEPTH|ALT ON|OFF|<valor>,  AUTO POS ON|OFF|<norte_m> <leste_m>  ou  AUTO OFF");
 	}
 
 

@@ -246,6 +246,15 @@ void UROVUdpLinkComponent::SendTelemetry()
 	CurrentJson->SetNumberField(TEXT("toward"), FRotator::ClampAxis(FMath::RadiansToDegrees(FMath::Atan2(Current.Y, Current.X))));
 	Json->SetObjectField(TEXT("current"), CurrentJson);
 
+	// Swell: altura (m), período (s) e direção DE ONDE vem (0 = Norte); height 0 = desligado.
+	// "attenuation" = e^(-kz) na profundidade do ROV (0..1)
+	const TSharedRef<FJsonObject> SwellJson = MakeShared<FJsonObject>();
+	SwellJson->SetNumberField(TEXT("height"), ROV->GetSwellHeightM());
+	SwellJson->SetNumberField(TEXT("period"), ROV->GetSwellPeriodS());
+	SwellJson->SetNumberField(TEXT("from"), ROV->GetSwellFromDeg());
+	SwellJson->SetNumberField(TEXT("attenuation"), ROV->GetSwellAttenuation(T.DepthM));
+	Json->SetObjectField(TEXT("swell"), SwellJson);
+
 	// Pilotos automáticos: ligado, alvo e fase (ajustando, freando, segurando)
 	auto PhaseName = [](EROVAutoPhase Phase) -> FString
 	{
@@ -274,6 +283,18 @@ void UROVUdpLinkComponent::SendTelemetry()
 	const TSharedRef<FJsonObject> Autos = MakeShared<FJsonObject>();
 	Autos->SetObjectField(TEXT("heading"), Heading);
 	Autos->SetObjectField(TEXT("vertical"), Vertical);
+
+	// Station keeping: alvo [norte, leste] em m (mesmas coordenadas de "pos") e desvio atual
+	const TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	const FVector2D TargetPosition = ROV->GetTargetPositionM();
+	TArray<TSharedPtr<FJsonValue>> TargetArray;
+	TargetArray.Add(MakeShared<FJsonValueNumber>(TargetPosition.X));
+	TargetArray.Add(MakeShared<FJsonValueNumber>(TargetPosition.Y));
+	Position->SetBoolField(TEXT("on"), ROV->IsPositionHoldOn());
+	Position->SetArrayField(TEXT("target"), TargetArray);
+	Position->SetNumberField(TEXT("offset"), ROV->GetPositionOffsetM().Size());
+	Position->SetStringField(TEXT("phase"), PhaseName(ROV->GetPositionPhase()));
+	Autos->SetObjectField(TEXT("position"), Position);
 	Json->SetObjectField(TEXT("autos"), Autos);
 
 	// Objeto -> texto compacto (sem espaços nem quebras de linha: pacote menor)

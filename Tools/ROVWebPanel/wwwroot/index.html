@@ -55,11 +55,13 @@
       <table class="kv">
         <tr><td>Rumo</td><td id="auto-heading">--</td><td id="auto-heading-dev"></td></tr>
         <tr><td>Vertical</td><td id="auto-vertical">--</td><td id="auto-vertical-dev"></td></tr>
+        <tr><td>Posição</td><td id="auto-position">--</td><td id="auto-position-dev"></td></tr>
       </table>
       <p class="legend"><span class="phase ADJUSTING">ajustando</span> piloto mexe → <span class="phase BRAKING">freando</span> soltou → <span class="phase HOLDING">segurando</span> alvo gravado</p>
       <h3>Ambiente</h3>
       <table class="kv">
         <tr><td>Corrente</td><td id="current">--</td><td>para onde a água vai</td></tr>
+        <tr><td>Swell</td><td id="swell">--</td><td id="swell-hint">de onde as ondas vêm</td></tr>
         <tr><td>Luzes / câmera</td><td id="lights-camera">--</td><td></td></tr>
         <tr><td>Submerso</td><td id="submerged">--</td><td>parte do casco na água</td></tr>
       </table>
@@ -86,7 +88,9 @@
       <form class="row" data-template="AUTO HEADING {v}"><button type="button" class="switch" id="sw-auto-heading">Auto rumo</button><input type="number" step="1" min="0" max="359" placeholder="alvo (graus)" required><button>Ir</button></form>
       <form class="row" data-template="AUTO DEPTH {v}"><button type="button" class="switch" id="sw-auto-depth">Auto prof.</button><input type="number" step="0.1" min="0" placeholder="alvo (m)" required><button>Ir</button></form>
       <form class="row" data-template="AUTO ALT {v}"><button type="button" class="switch" id="sw-auto-alt">Auto alt.</button><input type="number" step="0.1" min="0.5" placeholder="alvo (m)" required><button>Ir</button></form>
+      <form class="row current" id="pos-form"><button type="button" class="switch" id="sw-auto-pos">Auto posição</button><input type="number" step="0.1" placeholder="norte (m)" required id="pos-north"><input type="number" step="0.1" placeholder="leste (m)" required id="pos-east"><button>Ir</button></form>
       <form class="row current" id="current-form"><button type="button" class="switch" id="sw-current">Corrente</button><input type="number" step="0.1" min="0" placeholder="nós" required id="current-knots"><input type="number" step="1" min="0" max="359" placeholder="para (graus)" id="current-toward"><button>Aplicar</button></form>
+      <form class="row swell" id="swell-form"><button type="button" class="switch" id="sw-swell">Swell</button><input type="number" step="0.1" min="0" placeholder="altura (m)" required id="swell-height"><input type="number" step="0.5" min="2" max="30" placeholder="período (s)" id="swell-period"><input type="number" step="1" min="0" max="359" placeholder="de (graus)" id="swell-from"><button>Aplicar</button></form>
     </section>
 
     <!-- ===================== CONSOLE ===================== -->

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
 #include "ROVPid.h"
+#include "ROVNotch.h"
 #include "ROVPawn.generated.h"
 
 
@@ -123,6 +124,36 @@ public:
 	/** Velocidade da corrente no mundo, em m/s */
 	FVector GetCurrentVelocityMs() const;
 
+	/**
+	 * Define o swell (ondulação): altura crista-cavado em metros, período em segundos e direção
+	 * DE ONDE as ondas vêm (0 = Norte = +X, 90 = Leste = +Y). Altura 0 desliga.
+	 * Atenção: é a convenção OPOSTA à da corrente, que usa "para onde vai" (é como cada área fala:
+	 * meteorologia/ondas dizem "de onde", oceanografia de corrente diz "para onde").
+	 * Os valores são limitados (período 2..30 s, onda no máximo 1/7 do comprimento) - leia os getters.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ROV")
+	void SetSwell(float HeightM, float PeriodS, float FromDeg);
+
+	bool IsSwellOn() const { return SwellHeightM > 0.f; }
+	float GetSwellHeightM() const { return SwellHeightM; }
+	float GetSwellPeriodS() const { return SwellPeriodS; }
+	float GetSwellFromDeg() const { return SwellFromDeg; }
+
+	/** Comprimento de onda em águas profundas: λ = g·T²/2π (m) */
+	float GetSwellWavelengthM() const;
+
+	/** Quanto do movimento da onda chega a esta profundidade: e^(-k·z), de 0 a 1 */
+	float GetSwellAttenuation(float DepthM) const;
+
+	/** Velocidade orbital (m/s) e aceleração (m/s²) da água por causa do swell, num ponto do mundo (cm) */
+	void GetSwellKinematics(const FVector& LocationCm, FVector& OutVelocityMs, FVector& OutAccelerationMs2) const;
+
+	/** Elevação da superfície por causa do swell, η = a·cos θ, em metros (+ = crista) */
+	float GetSwellElevationM(const FVector& LocationCm) const;
+
+	/** Velocidade total da água num ponto: corrente + swell, em m/s */
+	FVector GetWaterVelocityMs(const FVector& LocationCm) const;
+
 	/** Liga/desliga o auto heading. Ao ligar, segura o rumo atual. */
 	UFUNCTION(BlueprintCallable, Category = "ROV|Autos")
 	void SetAutoHeading(bool bEnable);
@@ -157,6 +188,24 @@ public:
 	/** Em que fase cada piloto automático está agora (mostrado no HUD) */
 	EROVAutoPhase GetHeadingPhase() const;
 	EROVAutoPhase GetVerticalPhase() const;
+
+	/**
+	 * Station keeping (manter posição): segura o ROV parado num ponto do plano (norte, leste),
+	 * usando surge e sway. Ao ligar, primeiro freia e grava o ponto onde parou.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ROV|Autos")
+	void SetPositionHold(bool bEnable);
+
+	/** Liga o station keeping num ponto: metros para o Norte (+X) e para o Leste (+Y) da origem do mapa */
+	UFUNCTION(BlueprintCallable, Category = "ROV|Autos")
+	void SetTargetPosition(float NorthM, float EastM);
+
+	bool IsPositionHoldOn() const { return bPositionHold; }
+	FVector2D GetTargetPositionM() const { return TargetPositionM; }
+	EROVAutoPhase GetPositionPhase() const;
+
+	/** Onde o ROV está em relação ao alvo (posição real - alvo), em metros: X = Norte, Y = Leste */
+	FVector2D GetPositionOffsetM() const;
 
 	/** Volta o ROV para onde ele nasceu, parado e com os propulsores zerados */
 	UFUNCTION(BlueprintCallable, Category = "ROV")
@@ -242,6 +291,18 @@ protected:
 	/** Direção PARA ONDE a corrente vai (convenção oceanográfica). 0 = Norte (+X), 90 = Leste (+Y) */
 	UPROPERTY(EditAnywhere, Category = "ROV|Agua")
 	float CurrentTowardDeg = 0.f;
+
+	/** Swell: altura da onda, da crista ao cavado (0 = sem swell). A amplitude é a metade. */
+	UPROPERTY(EditAnywhere, Category = "ROV|Agua|Swell", meta = (ClampMin = "0.0"))
+	float SwellHeightM = 0.f;
+
+	/** Swell: tempo entre duas cristas passando pelo mesmo ponto */
+	UPROPERTY(EditAnywhere, Category = "ROV|Agua|Swell", meta = (ClampMin = "2.0", ClampMax = "30.0"))
+	float SwellPeriodS = 10.f;
+
+	/** Swell: direção DE ONDE as ondas vêm (oposta à convenção da corrente). 0 = Norte (+X), 90 = Leste (+Y) */
+	UPROPERTY(EditAnywhere, Category = "ROV|Agua|Swell")
+	float SwellFromDeg = 0.f;
 
 	// =====================================================================
 	// Simulador (valores da ficha da MBARI; "estimado" = não publicado)
@@ -356,6 +417,7 @@ private:
 	void UpdateAutopilots(float DeltaTime);
 	void UpdateAutoHeading(float DeltaTime);
 	void UpdateAutoVertical(float DeltaTime);
+	void UpdateAutoPosition(float DeltaTime);
 	float GetSubmergedFraction() const;
 	void ApplyCameraLimits();
 
@@ -375,6 +437,7 @@ private:
 	void OnToggleAutoHeading();
 	void OnToggleAutoDepth();
 	void OnToggleAutoAltitude();
+	void OnToggleAutoPosition();
 
 	UPROPERTY(Transient) TObjectPtr<UInputMappingContext> InputContext;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> SurgeAction;
@@ -391,6 +454,7 @@ private:
 	UPROPERTY(Transient) TObjectPtr<UInputAction> AutoHeadingAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> AutoDepthAction;
 	UPROPERTY(Transient) TObjectPtr<UInputAction> AutoAltitudeAction;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> AutoPositionAction;
 
 	// --- Estado ---
 	FVector PilotTranslation = FVector::ZeroVector; // comando do piloto, -1..1
@@ -421,6 +485,21 @@ private:
 	// "Segura onde parar": depois que o piloto solta (ou ao ligar o auto), freia antes de gravar o alvo
 	bool bHeadingSettling = false;
 	bool bVerticalSettling = false;
+
+	// Station keeping: um PID por eixo do MUNDO (Norte, Leste). No mundo, e não no casco, porque a
+	// corrente é fixa no mundo: o I que aprendeu a força dela continua valendo quando o ROV gira.
+	// Saída em frações de MaxThrust.Y (sway, o eixo mais fraco); ganhos e limites no construtor.
+	FROVPid NorthPid = FROVPid(0.18f, 0.03f, 1.0f);
+	FROVPid EastPid = FROVPid(0.18f, 0.03f, 1.0f);
+	bool bPositionHold = false;
+	bool bPositionSettling = false;
+	float PositionSettlingTime = 0.f; // s freando (limite: com corrente, só o D nunca zera a velocidade)
+	FVector2D TargetPositionM = FVector2D::ZeroVector;
+
+	// Filtro de ondas: notch na frequência do swell, na posição e na velocidade (Norte e Leste)
+	FROVNotchFilter WaveFilterPosN, WaveFilterPosE, WaveFilterVelN, WaveFilterVelE;
+	FVector2D FilteredPositionM = FVector2D::ZeroVector;
+	FVector2D FilteredVelocityMs = FVector2D::ZeroVector;
 
 	FTransform StartTransform; // onde o ROV nasceu (usado pelo RESET)
 };

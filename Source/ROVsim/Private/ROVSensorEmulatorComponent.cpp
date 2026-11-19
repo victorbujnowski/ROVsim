@@ -358,7 +358,8 @@ FString UROVSensorEmulatorComponent::BuildSentence(EROVSensorKind Kind) const
 		// em relação à ÁGUA (o que o ROV "sente") e em relação ao FUNDO (o que ele realmente percorre).
 		// Com corrente, os dois são diferentes; é assim que um DVL real ajuda a estimar a corrente.
 		const FVector GroundWorld = ROV->GetActorQuat().RotateVector(T.LocalVelocityMs);
-		const FVector Water = ROV->GetActorQuat().UnrotateVector(GroundWorld - ROV->GetCurrentVelocityMs()) * MsToKnots;
+		// A água = corrente + órbita do swell no ponto do ROV
+		const FVector Water = ROV->GetActorQuat().UnrotateVector(GroundWorld - ROV->GetWaterVelocityMs(ROV->GetActorLocation())) * MsToKnots;
 		const FVector Ground = T.LocalVelocityMs * MsToKnots;
 		return ROVNmea::Sentence(FString::Printf(TEXT("VDVBW,%.2f,%.2f,A,%.2f,%.2f,A"), Water.X, Water.Y, Ground.X, Ground.Y));
 	}

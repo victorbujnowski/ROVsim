@@ -93,9 +93,26 @@ function onState(state) {
     $("auto-vertical-dev").textContent = `desvio ${fmt(dev, 2, true)} m ${isDepth ? "(+ = mais fundo)" : "(+ = mais alto)"}`;
   }
 
+  const ap = t.autos.position;
+  if (ap && ap.on) {
+    $("auto-position").innerHTML = `<span class="phase ${ap.phase}">${PHASES[ap.phase]}</span> N ${fmt(ap.target[0], 1)} · L ${fmt(ap.target[1], 1)} m`;
+    $("auto-position-dev").textContent = `desvio ${fmt(ap.offset, 2)} m`;
+  } else {
+    $("auto-position").innerHTML = `<span class="phase OFF">desligado</span>`;
+    $("auto-position-dev").textContent = "";
+  }
+
   // Ambiente
   $("current").textContent = t.current.knots > 0.005
     ? `${fmt(t.current.knots, 2)} nós para ${fmt(t.current.toward, 0)}° ${cardinal(t.current.toward)}` : "nenhuma";
+  const sw = t.swell;
+  if (sw && sw.height > 0) {
+    $("swell").textContent = `${fmt(sw.height, 1)} m · ${fmt(sw.period, 0)} s · de ${fmt(sw.from, 0)}° ${cardinal(sw.from)}`;
+    $("swell-hint").textContent = `aqui sobra ${fmt(sw.attenuation * 100, 0)}% do movimento (de onde vem)`;
+  } else {
+    $("swell").textContent = "nenhum";
+    $("swell-hint").textContent = "de onde as ondas vêm";
+  }
   $("lights-camera").textContent = `${t.lights ? "ligadas" : "desligadas"} · ${t.camera === "EXT" ? "externa" : "cockpit"}`;
   $("submerged").textContent = `${fmt(t.submerged * 100, 0)}%`;
 
@@ -257,6 +274,12 @@ $("current-form").addEventListener("submit", (e) => {
   e.preventDefault();
   sendCommand(`CURRENT ${$("current-knots").value} ${$("current-toward").value || 0}`);
 });
+const swellCommand = () => `SWELL ${$("swell-height").value || 2} ${$("swell-period").value || 10} ${$("swell-from").value || 0}`;
+$("pos-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  sendCommand(`AUTO POS ${$("pos-north").value} ${$("pos-east").value}`);
+});
+$("swell-form").addEventListener("submit", (e) => { e.preventDefault(); sendCommand(swellCommand()); });
 
 // =============================================================================
 // Botões liga/desliga: cada um mostra o estado ATUAL (da telemetria) e, ao clicar,
@@ -296,11 +319,22 @@ const SWITCHES = {
     on: (t) => t.autos.vertical.mode === "ALT",
     command: (t) => (t.autos.vertical.mode === "ALT" ? "AUTO ALT OFF" : "AUTO ALT ON"),
   },
+  "sw-auto-pos": {
+    label: (t) => `Auto posição: ${t.autos.position && t.autos.position.on ? "ON" : "OFF"}`,
+    on: (t) => t.autos.position && t.autos.position.on,
+    command: (t) => (t.autos.position && t.autos.position.on ? "AUTO POS OFF" : "AUTO POS ON"),
+  },
   "sw-current": {
     label: (t) => `Corrente: ${t.current.knots > 0.005 ? `${fmt(t.current.knots, 1)} nó` : "OFF"}`,
     on: (t) => t.current.knots > 0.005,
     // Ligada: desliga. Desligada: liga com os valores dos campos (1 nó para o Norte se estiverem vazios)
     command: (t) => (t.current.knots > 0.005 ? "CURRENT 0" : `CURRENT ${$("current-knots").value || 1} ${$("current-toward").value || 0}`),
+  },
+  "sw-swell": {
+    label: (t) => `Swell: ${t.swell && t.swell.height > 0 ? `${fmt(t.swell.height, 1)} m` : "OFF"}`,
+    on: (t) => t.swell && t.swell.height > 0,
+    // Ligado: desliga. Desligado: liga com os campos (2 m, 10 s, do Norte se estiverem vazios)
+    command: (t) => (t.swell && t.swell.height > 0 ? "SWELL 0" : swellCommand()),
   },
 };
 

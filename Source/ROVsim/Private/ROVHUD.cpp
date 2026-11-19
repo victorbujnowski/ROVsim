@@ -276,9 +276,20 @@ void AROVHUD::DrawHUD()
 				: FString::Printf(TEXT("desvio %+.2f m  (+ = mais alto)"), T.AltitudeM - ROV->GetTargetAltitude());
 		}
 
+		const EROVAutoPhase PositionPhase = ROV->GetPositionPhase();
+		FHudRow Position{ TEXT("Posição"), PhaseName(PositionPhase), TEXT("P  /  AUTO POS  (segura parado contra a corrente)"), PhaseColor(PositionPhase) };
+		if (PositionPhase != EROVAutoPhase::Off)
+		{
+			const FVector2D Target = ROV->GetTargetPositionM();
+			const FVector2D Offset = ROV->GetPositionOffsetM();
+			const float OffsetDir = FRotator::ClampAxis(FMath::RadiansToDegrees(FMath::Atan2(Offset.Y, Offset.X)));
+			Position.Value = FString::Printf(TEXT("%s  N %.1f  L %.1f m"), PhaseName(PositionPhase), Target.X, Target.Y);
+			Position.Hint = FString::Printf(TEXT("desvio %.2f m para %03.0f° %s"), Offset.Size(), OffsetDir, Cardinal(OffsetDir));
+		}
+
 		const FHudRow Legend{ TEXT("Fases"), TEXT("ajustando > freando > segurando"), TEXT("mexe / solta / alvo gravado"), HintColor };
 
-		RightY += DrawSection(TEXT("PILOTO AUTOMÁTICO"), { Heading, Vertical, Legend }, RightEdge, RightY, true, Accent, RightColumnWidth) + SectionGap;
+		RightY += DrawSection(TEXT("PILOTO AUTOMÁTICO"), { Heading, Vertical, Position, Legend }, RightEdge, RightY, true, Accent, RightColumnWidth) + SectionGap;
 	}
 
 	// ---------------------------------------------------------------- ambiente
@@ -294,7 +305,19 @@ void AROVHUD::DrawHUD()
 			CurrentRow.ValueColor = WarnColor;
 		}
 
-		TArray<FHudRow> Rows = { CurrentRow };
+		FHudRow SwellRow{ TEXT("Swell"), TEXT("nenhum"), TEXT("SWELL <altura_m> <período_s> <de_graus>"), HintColor };
+		if (ROV->IsSwellOn())
+		{
+			const float FromDeg = ROV->GetSwellFromDeg();
+			SwellRow.Value = FString::Printf(TEXT("%.1f m  %.0f s  de %03.0f° %s"),
+				ROV->GetSwellHeightM(), ROV->GetSwellPeriodS(), FromDeg, Cardinal(FromDeg));
+			// e^(-kz): quanto da onda da superfície ainda chega na profundidade do ROV
+			SwellRow.Hint = FString::Printf(TEXT("aqui sobra %.0f%% do movimento  (λ %.0f m, de onde vem)"),
+				ROV->GetSwellAttenuation(T.DepthM) * 100.f, ROV->GetSwellWavelengthM());
+			SwellRow.ValueColor = WarnColor;
+		}
+
+		TArray<FHudRow> Rows = { CurrentRow, SwellRow };
 		if (bSim)
 		{
 			Rows.Add({ TEXT("Submerso"), FString::Printf(TEXT("%.0f%%"), T.SubmergedFraction * 100.f), TEXT("parte do casco dentro d'água") });
@@ -365,7 +388,7 @@ void AROVHUD::DrawHUD()
 	// ---------------------------------------------------------------- ajuda
 	const TArray<FString> Help = {
 		TEXT("TECLADO   W/S frente/ré   A/D lateral   E/Q sobe/desce   setas giram   mouse olha   roda zoom"),
-		TEXT("          C câmera   M modo   L luzes   H auto rumo   J auto prof.   K auto alt.   segurar R reset"),
+		TEXT("          C câmera   M modo   L luzes   H auto rumo   J auto prof.   K auto alt.   P auto posição   segurar R reset"),
 		TEXT("GAMEPAD   stick esq. sobe/gira   stick dir. anda/lateral   D-pad câmera   RB/LB zoom   Y câmera   X luzes"),
 		TEXT("          Menu modo   L3 auto rumo   R3 auto prof.   segurar B reset"),
 	};

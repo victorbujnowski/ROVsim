@@ -225,6 +225,57 @@ void UROVUdpLinkComponent::SendTelemetry()
 	Json->SetArrayField(TEXT("vel"), MakeArray(T.LocalVelocityMs));
 	Json->SetNumberField(TEXT("yawRate"), T.YawRateDegS);
 
+	// --- Estado do veículo (para o painel web) ---
+	Json->SetBoolField(TEXT("lights"), ROV->AreLightsOn());
+	Json->SetStringField(TEXT("camera"), ROV->GetCameraMode() == EROVCameraMode::External ? TEXT("EXT") : TEXT("COCKPIT"));
+	Json->SetNumberField(TEXT("submerged"), T.SubmergedFraction);
+	Json->SetNumberField(TEXT("mass"), T.MassKg);
+
+	// Propulsores em % do máximo: surge, sway, heave, yaw
+	TArray<TSharedPtr<FJsonValue>> Thrust;
+	Thrust.Add(MakeShared<FJsonValueNumber>(T.ThrustPercent.X));
+	Thrust.Add(MakeShared<FJsonValueNumber>(T.ThrustPercent.Y));
+	Thrust.Add(MakeShared<FJsonValueNumber>(T.ThrustPercent.Z));
+	Thrust.Add(MakeShared<FJsonValueNumber>(T.YawThrustPercent));
+	Json->SetArrayField(TEXT("thrust"), Thrust);
+
+	// Corrente: nós e direção PARA ONDE a água vai (0 = Norte)
+	const FVector Current = ROV->GetCurrentVelocityMs();
+	const TSharedRef<FJsonObject> CurrentJson = MakeShared<FJsonObject>();
+	CurrentJson->SetNumberField(TEXT("knots"), Current.Size() / 0.514444);
+	CurrentJson->SetNumberField(TEXT("toward"), FRotator::ClampAxis(FMath::RadiansToDegrees(FMath::Atan2(Current.Y, Current.X))));
+	Json->SetObjectField(TEXT("current"), CurrentJson);
+
+	// Pilotos automáticos: ligado, alvo e fase (ajustando, freando, segurando)
+	auto PhaseName = [](EROVAutoPhase Phase) -> FString
+	{
+		switch (Phase)
+		{
+		case EROVAutoPhase::Adjusting: return TEXT("ADJUSTING");
+		case EROVAutoPhase::Braking:   return TEXT("BRAKING");
+		case EROVAutoPhase::Holding:   return TEXT("HOLDING");
+		case EROVAutoPhase::NoBottom:  return TEXT("NO_BOTTOM");
+		default:                       return TEXT("OFF");
+		}
+	};
+	const TSharedRef<FJsonObject> Heading = MakeShared<FJsonObject>();
+	Heading->SetBoolField(TEXT("on"), ROV->IsAutoHeadingOn());
+	Heading->SetNumberField(TEXT("target"), ROV->GetTargetHeading());
+	Heading->SetStringField(TEXT("phase"), PhaseName(ROV->GetHeadingPhase()));
+
+	const TSharedRef<FJsonObject> Vertical = MakeShared<FJsonObject>();
+	const EROVVerticalAuto VerticalMode = ROV->GetVerticalAuto();
+	Vertical->SetStringField(TEXT("mode"),
+		VerticalMode == EROVVerticalAuto::Depth ? TEXT("DEPTH") : VerticalMode == EROVVerticalAuto::Altitude ? TEXT("ALT") : TEXT("OFF"));
+	Vertical->SetNumberField(TEXT("target"),
+		VerticalMode == EROVVerticalAuto::Altitude ? ROV->GetTargetAltitude() : ROV->GetTargetDepth());
+	Vertical->SetStringField(TEXT("phase"), PhaseName(ROV->GetVerticalPhase()));
+
+	const TSharedRef<FJsonObject> Autos = MakeShared<FJsonObject>();
+	Autos->SetObjectField(TEXT("heading"), Heading);
+	Autos->SetObjectField(TEXT("vertical"), Vertical);
+	Json->SetObjectField(TEXT("autos"), Autos);
+
 	// Objeto -> texto compacto (sem espaços nem quebras de linha: pacote menor)
 	FString Text;
 	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =

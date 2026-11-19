@@ -80,6 +80,26 @@ on Windows 11 with signature enforcement (Code 52), and disabling enforcement wa
 USB-serial or serial-server port with a signed driver should work as is. Everything is configurable on the
 `Sensors` component.
 
+### Web panel (surface console in the browser)
+
+`Tools/ROVWebPanel` is a small ASP.NET Core bridge (no third-party packages) that talks to the simulator
+**only through the network interfaces above**, like a real topside console, and serves a dashboard over
+WebSocket at 10 Hz:
+
+```
+cd Tools/ROVWebPanel
+dotnet run            # then open http://localhost:8080   (options: --sim <host> --port <http port>)
+```
+
+- Navigation (compass with autopilot target, artificial horizon), velocities, thruster bars, autopilot
+  phase and deviation, current, 60 s depth/heading charts
+- Every NMEA sensor received by the bridge, with measured rate, checksum failures and decoded fields
+- Command buttons/forms and a console for the TCP command protocol (replies shown in green/red)
+- Piloting from the browser with the keyboard or a gamepad (Gamepad API, BlueROV2 layout), sent as UDP
+  commands at 20 Hz — the simulator's 0.5 s watchdog stops the thrusters if the page is closed
+
+The bridge binds UDP 5001 and 10001–10004, so the PowerShell monitors cannot run at the same time.
+
 ### Test tools (PowerShell, in `Tools/`)
 
 | Script | Purpose |
@@ -101,6 +121,7 @@ USB-serial or serial-server port with a signed driver should work as is. Everyth
 | `ROVSensorEmulatorComponent` | NMEA sensors over UDP, TCP and serial (own writer thread) |
 | `ROVHUD` | Telemetry HUD in labelled sections with units and sign conventions |
 | `ROVGameMode` | Spawns the ROV, sets the HUD, automated smoke test |
+| `Tools/ROVWebPanel` | Web panel: C# bridge (UDP/TCP ↔ WebSocket) and the dashboard page |
 
 ## Tests
 

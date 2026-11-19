@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ROVsim · Painel</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">ROVsim <span>painel de superfície</span></div>
+    <div class="links">
+      <span class="link" id="link-ws" title="Navegador ↔ ponte (WebSocket)">Ponte</span>
+      <span class="link" id="link-telemetry" title="Telemetria JSON, UDP 5001">Telemetria UDP 5001</span>
+      <span class="link" id="link-commands" title="Comandos com resposta, TCP 5002">Comandos TCP 5002</span>
+      <span class="link" id="link-dvl" title="Sensor DVL, TCP 10010">DVL TCP 10010</span>    </div>
+    <div class="badges">
+      <span class="badge" id="badge-mode">—</span>
+      <span class="badge" id="badge-control">—</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ===================== NAVEGAÇÃO ===================== -->
+    <section class="card nav">
+      <h2>Navegação</h2>
+      <div class="big-row">
+        <div class="big"><label>Profundidade</label><b id="depth">--</b><small>m abaixo da superfície</small></div>
+        <div class="big"><label>Altitude</label><b id="altitude">--</b><small>m até o fundo (altímetro)</small></div>
+        <div class="big"><label>Rumo</label><b id="heading">--</b><small id="heading-card">para onde a proa aponta</small></div>
+      </div>
+      <div class="instruments">
+        <figure><canvas id="compass" width="220" height="220"></canvas><figcaption>Bússola · laranja = alvo do auto</figcaption></figure>
+        <figure><canvas id="attitude" width="220" height="220"></canvas><figcaption>Horizonte · <span id="pitch">--</span> pitch · <span id="roll">--</span> roll</figcaption></figure>
+      </div>
+    </section>
+
+    <!-- ===================== VELOCIDADE E PROPULSORES ===================== -->
+    <section class="card motion">
+      <h2>Velocidade <em>(em relação ao fundo)</em></h2>
+      <table class="kv">
+        <tr><td>Avanço (surge)</td><td id="v-surge">--</td><td>+ = para frente</td></tr>
+        <tr><td>Lateral (sway)</td><td id="v-sway">--</td><td>+ = para a direita</td></tr>
+        <tr><td>Vertical (heave)</td><td id="v-heave">--</td><td>+ = subindo</td></tr>
+        <tr><td>Horizontal</td><td id="v-horiz">--</td><td>velocidade sobre o fundo</td></tr>
+        <tr><td>Giro (yaw)</td><td id="v-yaw">--</td><td>+ = para a direita</td></tr>
+      </table>
+      <h3>Propulsores <em>(% do empuxo máximo)</em></h3>
+      <div class="bars" id="thrust-bars"></div>
+    </section>
+
+    <!-- ===================== AUTOS E AMBIENTE ===================== -->
+    <section class="card autos">
+      <h2>Piloto automático</h2>
+      <table class="kv">
+        <tr><td>Rumo</td><td id="auto-heading">--</td><td id="auto-heading-dev"></td></tr>
+        <tr><td>Vertical</td><td id="auto-vertical">--</td><td id="auto-vertical-dev"></td></tr>
+      </table>
+      <p class="legend"><span class="phase ADJUSTING">ajustando</span> piloto mexe → <span class="phase BRAKING">freando</span> soltou → <span class="phase HOLDING">segurando</span> alvo gravado</p>
+      <h3>Ambiente</h3>
+      <table class="kv">
+        <tr><td>Corrente</td><td id="current">--</td><td>para onde a água vai</td></tr>
+        <tr><td>Luzes / câmera</td><td id="lights-camera">--</td><td></td></tr>
+        <tr><td>Submerso</td><td id="submerged">--</td><td>parte do casco na água</td></tr>
+      </table>
+    </section>
+
+    <!-- ===================== GRÁFICOS ===================== -->
+    <section class="card charts">
+      <h2>Últimos 60 s</h2>
+      <canvas id="chart-depth" width="560" height="150"></canvas>
+      <canvas id="chart-heading" width="560" height="150"></canvas>
+    </section>
+
+    <!-- ===================== CONTROLE ===================== -->
+    <section class="card control">
+      <h2>Controle <em>(TCP 5002)</em></h2>
+      <!-- Um botão por função: mostra o estado ATUAL (vindo da telemetria) e alterna ao clicar -->
+      <div class="buttons">
+        <button class="switch" id="sw-mode">Modo</button>
+        <button class="switch" id="sw-lights">Luzes</button>
+        <button class="switch" id="sw-camera">Câmera</button>
+        <button data-cmd="RESET" class="danger">Reset</button>
+      </div>
+      <!-- Autos: o botão liga/desliga segurando o valor atual; o campo + "Ir" vai para um alvo -->
+      <form class="row" data-template="AUTO HEADING {v}"><button type="button" class="switch" id="sw-auto-heading">Auto rumo</button><input type="number" step="1" min="0" max="359" placeholder="alvo (graus)" required><button>Ir</button></form>
+      <form class="row" data-template="AUTO DEPTH {v}"><button type="button" class="switch" id="sw-auto-depth">Auto prof.</button><input type="number" step="0.1" min="0" placeholder="alvo (m)" required><button>Ir</button></form>
+      <form class="row" data-template="AUTO ALT {v}"><button type="button" class="switch" id="sw-auto-alt">Auto alt.</button><input type="number" step="0.1" min="0.5" placeholder="alvo (m)" required><button>Ir</button></form>
+      <form class="row current" id="current-form"><button type="button" class="switch" id="sw-current">Corrente</button><input type="number" step="0.1" min="0" placeholder="nós" required id="current-knots"><input type="number" step="1" min="0" max="359" placeholder="para (graus)" id="current-toward"><button>Aplicar</button></form>
+    </section>
+
+    <!-- ===================== CONSOLE ===================== -->
+    <section class="card console">
+      <h2>Console <em>(o que vai e o que volta pelo TCP)</em></h2>
+      <div id="console-log"></div>
+      <form id="console-form"><input id="console-input" placeholder="digite um comando, ex.: STATUS   (↑ ↓ histórico)" autocomplete="off"><button>Enviar</button></form>
+    </section>
+
+    <!-- ===================== SENSORES ===================== -->
+    <section class="card sensors">
+      <h2>Sensores NMEA <em>(recebidos pela ponte · checksum conferido)</em></h2>
+      <table class="grid">
+        <thead><tr><th>Sensor</th><th>Origem</th><th>Frase</th><th>Hz</th><th>Total</th><th>Inválidas</th><th>Significado</th><th>Última frase</th></tr></thead>
+        <tbody id="sensor-rows"><tr><td colspan="8" class="muted">aguardando dados...</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

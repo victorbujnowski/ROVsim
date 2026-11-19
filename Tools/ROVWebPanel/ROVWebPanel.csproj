@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    Painel web do ROVsim: ponte entre as interfaces de rede do simulador e o navegador.
+    Sem pacotes de terceiros: HTTP, WebSocket, UDP e TCP vêm do próprio .NET.
+    Rodar (na pasta Tools/ROVWebPanel):  dotnet run   e abrir http://localhost:8080
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ROVWebPanel</RootNamespace>
+  </PropertyGroup>
+
+</Project>

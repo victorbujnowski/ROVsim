@@ -22,3 +22,7 @@ Plugins/VisualStudioTools/
 
 # Arquivos brutos baixados (fonte dos assets importados em Content/)
 RawAssets/
+
+# Build da ponte web (.NET)
+Tools/ROVWebPanel/bin/
+Tools/ROVWebPanel/obj/

@@ -19,6 +19,7 @@
 #include "Engine/World.h"
 #include "ROVUdpLinkComponent.h"
 #include "ROVTcpCommandComponent.h"
+#include "ROVSensorEmulatorComponent.h"
 
 DEFINE_LOG_CATEGORY(LogROV);
 
@@ -138,6 +139,7 @@ AROVPawn::AROVPawn()
 	// Link de rede: componente sem posição no espaço, por isso não tem SetupAttachment
 	UdpLink = CreateDefaultSubobject<UROVUdpLinkComponent>(TEXT("UdpLink"));
 	TcpCommands = CreateDefaultSubobject<UROVTcpCommandComponent>(TEXT("TcpCommands"));
+	Sensors = CreateDefaultSubobject<UROVSensorEmulatorComponent>(TEXT("Sensors"));
 
 	// Quem cria e possui o ROV é o AROVGameMode (no PlayerStart), por isso não há AutoPossess aqui.
 }
@@ -359,6 +361,11 @@ void AROVPawn::TickSimulator(float DeltaTime)
 		DragLocal[Axis] = -(LinearDamping[Axis] * V + QuadraticCoef * FMath::Abs(V) * V) * Submerged;
 		DampingTorqueLocal[Axis] = -AngularDamping[Axis] * OmegaLocal[Axis] * Submerged;
 	}
+
+	// Efeito cata-vento: a força lateral da água não passa pelo centro de massa, e sim pelo
+	// centro de pressão (CP), deslocado no eixo X. Torque = r × F, com r = (x_CP, 0, 0) e F = (0, Fy, 0)
+	// -> Tz = x_CP * Fy. Com o CP atrás do centro de massa (x negativo), a proa gira para dentro da corrente.
+	DampingTorqueLocal.Z += (LateralCenterOfPressureX / CmPerM) * DragLocal.Y;
 
 	// --- 4) Propulsores, com atraso de resposta (filtro de 1ª ordem) ---
 	const float Alpha = 1.f - FMath::Exp(-DeltaTime / FMath::Max(ThrusterTimeConstant, KINDA_SMALL_NUMBER));
@@ -942,6 +949,36 @@ void AROVPawn::SetTargetAltitude(float AltitudeM)
 	bVerticalSettling = false; // alvo explícito: vai direto para ele
 	DepthPid.Reset();
 	UE_LOG(LogROV, Display, TEXT("Auto altitude LIGADO (alvo %.1f m)"), TargetAltitudeM);
+}
+
+EROVAutoPhase AROVPawn::GetHeadingPhase() const
+{
+	if (!bAutoHeading)
+	{
+		return EROVAutoPhase::Off;
+	}
+	if (FMath::Abs(PilotYaw) > 0.05f)
+	{
+		return EROVAutoPhase::Adjusting;
+	}
+	return bHeadingSettling ? EROVAutoPhase::Braking : EROVAutoPhase::Holding;
+}
+
+EROVAutoPhase AROVPawn::GetVerticalPhase() const
+{
+	if (VerticalAuto == EROVVerticalAuto::Off)
+	{
+		return EROVAutoPhase::Off;
+	}
+	if (VerticalAuto == EROVVerticalAuto::Altitude && Telemetry.AltitudeM < 0.f)
+	{
+		return EROVAutoPhase::NoBottom;
+	}
+	if (FMath::Abs(PilotTranslation.Z) > 0.05f)
+	{
+		return EROVAutoPhase::Adjusting;
+	}
+	return bVerticalSettling ? EROVAutoPhase::Braking : EROVAutoPhase::Holding;
 }
 
 void AROVPawn::OnToggleAutoDepth()

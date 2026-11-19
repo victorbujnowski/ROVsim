@@ -2,6 +2,7 @@
 
 #include "ROVPawn.h"
 #include "ROVUdpLinkComponent.h"
+#include "ROVSensorEmulatorComponent.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
@@ -14,7 +15,7 @@ namespace
 	constexpr float ColumnGap = 16.f;
 	constexpr float Margin = 20.f;
 	constexpr float SectionGap = 10.f;
-	constexpr float RightColumnWidth = 400.f; // todas as seções da direita com a mesma largura
+	constexpr float RightColumnWidth = 540.f; // todas as seções da direita com a mesma largura
 
 	const FLinearColor PanelColor(0.f, 0.02f, 0.05f, 0.68f);
 	const FLinearColor LabelColor(0.78f, 0.84f, 0.88f);
@@ -78,10 +79,10 @@ float AROVHUD::DrawBars(const FString& Title, const FString& Subtitle, const TAr
 	UFont* Font = GEngine->GetSmallFont();
 
 	constexpr float LabelW = 120.f;
-	constexpr float BarW = 200.f;   // metade para cada lado do zero
+	constexpr float BarW = 340.f;   // metade para cada lado do zero
 	constexpr float BarH = 9.f;
 	constexpr float ValueW = 50.f;
-	const float Width = 2.f * Padding + LabelW + BarW + 10.f + ValueW; // = 400, a largura da coluna direita
+	const float Width = 2.f * Padding + LabelW + BarW + 10.f + ValueW; // = 540, a largura da coluna direita
 	const float Height = 2.f * Padding + LineHeight * (Bars.Num() + 2) + 4.f;
 	const float Left = RightEdge - Width;
 
@@ -227,30 +228,57 @@ void AROVHUD::DrawHUD()
 
 	// ---------------------------------------------------------------- piloto automático
 	{
-		FHudRow Heading{ TEXT("Rumo"), TEXT("desligado"), TEXT("H  /  L3  /  AUTO HEADING"), HintColor };
-		if (ROV->IsAutoHeadingOn())
+		// Fase do auto: o nome e a cor dizem ao piloto o que o auto está fazendo AGORA
+		auto PhaseName = [](EROVAutoPhase Phase) -> const TCHAR*
+		{
+			switch (Phase)
+			{
+			case EROVAutoPhase::Adjusting: return TEXT("AJUSTANDO");
+			case EROVAutoPhase::Braking:   return TEXT("FREANDO");
+			case EROVAutoPhase::Holding:   return TEXT("SEGURANDO");
+			case EROVAutoPhase::NoBottom:  return TEXT("SEM FUNDO");
+			default:                       return TEXT("desligado");
+			}
+		};
+		auto PhaseColor = [](EROVAutoPhase Phase)
+		{
+			switch (Phase)
+			{
+			case EROVAutoPhase::Adjusting: return FLinearColor(0.45f, 0.8f, 1.f); // azul: o piloto manda
+			case EROVAutoPhase::Braking:   return WarnColor;                        // laranja: freando
+			case EROVAutoPhase::Holding:   return GoodColor;                        // verde: segurando o alvo
+			case EROVAutoPhase::NoBottom:  return WarnColor;
+			default:                       return HintColor;
+			}
+		};
+
+		const EROVAutoPhase HeadingPhase = ROV->GetHeadingPhase();
+		FHudRow Heading{ TEXT("Rumo"), PhaseName(HeadingPhase), TEXT("H  /  L3  /  AUTO HEADING"), PhaseColor(HeadingPhase) };
+		if (HeadingPhase != EROVAutoPhase::Off)
 		{
 			const float Deviation = FMath::FindDeltaAngleDegrees(ROV->GetTargetHeading(), T.HeadingDeg);
-			Heading.Value = FString::Printf(TEXT("ALVO %05.1f°"), ROV->GetTargetHeading());
+			Heading.Value = FString::Printf(TEXT("%s  %05.1f°"), PhaseName(HeadingPhase), ROV->GetTargetHeading());
 			Heading.Hint = FString::Printf(TEXT("desvio %+.1f°"), Deviation);
-			Heading.ValueColor = GoodColor;
 		}
 
-		FHudRow Vertical{ TEXT("Vertical"), TEXT("desligado"), TEXT("J prof.  /  K alt.  /  AUTO DEPTH|ALT"), HintColor };
+		const EROVAutoPhase VerticalPhase = ROV->GetVerticalPhase();
+		FHudRow Vertical{ TEXT("Vertical"), PhaseName(VerticalPhase), TEXT("J prof.  /  K alt.  /  AUTO DEPTH|ALT"), PhaseColor(VerticalPhase) };
 		if (ROV->GetVerticalAuto() == EROVVerticalAuto::Depth)
 		{
-			Vertical.Value = FString::Printf(TEXT("PROF. %.1f m"), ROV->GetTargetDepth());
+			Vertical.Value = FString::Printf(TEXT("%s  prof. %.1f m"), PhaseName(VerticalPhase), ROV->GetTargetDepth());
 			Vertical.Hint = FString::Printf(TEXT("desvio %+.2f m  (+ = mais fundo)"), T.DepthM - ROV->GetTargetDepth());
-			Vertical.ValueColor = GoodColor;
 		}
 		else if (ROV->GetVerticalAuto() == EROVVerticalAuto::Altitude)
 		{
-			Vertical.Value = FString::Printf(TEXT("ALT. %.1f m"), ROV->GetTargetAltitude());
-			Vertical.Hint = FString::Printf(TEXT("desvio %+.2f m  (+ = mais alto)"), T.AltitudeM - ROV->GetTargetAltitude());
-			Vertical.ValueColor = GoodColor;
+			Vertical.Value = FString::Printf(TEXT("%s  alt. %.1f m"), PhaseName(VerticalPhase), ROV->GetTargetAltitude());
+			Vertical.Hint = VerticalPhase == EROVAutoPhase::NoBottom
+				? FString(TEXT("altímetro sem fundo: o piloto controla"))
+				: FString::Printf(TEXT("desvio %+.2f m  (+ = mais alto)"), T.AltitudeM - ROV->GetTargetAltitude());
 		}
 
-		RightY += DrawSection(TEXT("PILOTO AUTOMÁTICO"), { Heading, Vertical }, RightEdge, RightY, true, Accent, RightColumnWidth) + SectionGap;
+		const FHudRow Legend{ TEXT("Fases"), TEXT("ajustando > freando > segurando"), TEXT("mexe / solta / alvo gravado"), HintColor };
+
+		RightY += DrawSection(TEXT("PILOTO AUTOMÁTICO"), { Heading, Vertical, Legend }, RightEdge, RightY, true, Accent, RightColumnWidth) + SectionGap;
 	}
 
 	// ---------------------------------------------------------------- ambiente
@@ -273,6 +301,65 @@ void AROVHUD::DrawHUD()
 			Rows.Add({ TEXT("Massa"),    FString::Printf(TEXT("%.0f kg"), T.MassKg), TEXT("Doc Ricketts (ficha da MBARI)") });
 		}
 		RightY += DrawSection(TEXT("AMBIENTE"), Rows, RightEdge, RightY, true, Accent, RightColumnWidth) + SectionGap;
+	}
+
+	// ---------------------------------------------------------------- sensores (saída NMEA)
+	if (const UROVSensorEmulatorComponent* Sensors = ROV->FindComponentByClass<UROVSensorEmulatorComponent>())
+	{
+		TArray<FHudRow> Rows;
+		for (const FROVSensorOutput& Output : Sensors->GetOutputs())
+		{
+			FHudRow Row;
+			switch (Output.Kind)
+			{
+			case EROVSensorKind::Gyro:      Row.Label = TEXT("Girobússola"); break;
+			case EROVSensorKind::Attitude:  Row.Label = TEXT("Atitude"); break;
+			case EROVSensorKind::Dvl:       Row.Label = TEXT("DVL"); break;
+			case EROVSensorKind::Depth:     Row.Label = TEXT("Profundímetro"); break;
+			case EROVSensorKind::Altimeter: Row.Label = TEXT("Altímetro"); break;
+			}
+
+			// Por onde sai, e se tem alguém do outro lado
+			switch (Output.Transport)
+			{
+			case EROVSensorTransport::Udp:
+				Row.Value = FString::Printf(TEXT("UDP %d  %.0f Hz"), Output.UdpPort, Output.RateHz);
+				Row.ValueColor = GoodColor;
+				break;
+			case EROVSensorTransport::Tcp:
+				Row.Value = FString::Printf(TEXT("TCP %d  %.0f Hz  (%d cliente%s)"), Sensors->GetTcpPort(), Output.RateHz,
+					Sensors->GetTcpClientCount(), Sensors->GetTcpClientCount() == 1 ? TEXT("") : TEXT("s"));
+				Row.ValueColor = Sensors->GetTcpClientCount() > 0 ? GoodColor : HintColor;
+				break;
+			case EROVSensorTransport::Serial:
+				if (Sensors->IsSerialOpen())
+				{
+					Row.Value = FString::Printf(TEXT("%s  %.0f Hz"), *Sensors->GetSerialPortName(), Output.RateHz);
+					Row.ValueColor = GoodColor;
+				}
+				else if (Output.UdpPort > 0)
+				{
+					// A COM não existe: está saindo pela porta UDP reserva
+					Row.Value = FString::Printf(TEXT("%s ausente > UDP %d  %.0f Hz"), *Sensors->GetSerialPortName(), Output.UdpPort, Output.RateHz);
+					Row.ValueColor = WarnColor;
+				}
+				else
+				{
+					Row.Value = FString::Printf(TEXT("%s ausente  (sem envio)"), *Sensors->GetSerialPortName());
+					Row.ValueColor = WarnColor;
+				}
+				break;
+			}
+			if (!Output.bEnabled)
+			{
+				Row.Value = TEXT("desligado");
+				Row.ValueColor = HintColor;
+			}
+
+			Row.Hint = Output.LastSentence.IsEmpty() ? FString(TEXT("(nada enviado)")) : Output.LastSentence;
+			Rows.Add(Row);
+		}
+		RightY += DrawSection(TEXT("SENSORES  (saída NMEA: última frase enviada)"), Rows, RightEdge, RightY, true, Accent, RightColumnWidth) + SectionGap;
 	}
 
 	// ---------------------------------------------------------------- ajuda

@@ -17,6 +17,7 @@ class UInputMappingContext;
 class UInputAction;
 class UROVUdpLinkComponent;
 class UROVTcpCommandComponent;
+class UROVSensorEmulatorComponent;
 struct FInputActionValue;
 
 // Categoria de log própria: filtrar por "LogROV" no Output Log
@@ -38,6 +39,22 @@ enum class EROVCameraMode : uint8
 {
 	External UMETA(DisplayName = "Externa (Spring Arm)"),
 	Cockpit UMETA(DisplayName = "Cockpit (1a pessoa)")
+};
+
+/**
+ * Fase de um piloto automático, do ponto de vista do piloto:
+ *   AJUSTANDO  o piloto está mexendo no comando: ele manda e o alvo acompanha
+ *   FREANDO    o piloto soltou: o auto só freia o movimento
+ *   SEGURANDO  o movimento parou: o alvo ficou gravado e o PID o mantém
+ */
+UENUM(BlueprintType)
+enum class EROVAutoPhase : uint8
+{
+	Off UMETA(DisplayName = "Desligado"),
+	Adjusting UMETA(DisplayName = "Ajustando"),
+	Braking UMETA(DisplayName = "Freando"),
+	Holding UMETA(DisplayName = "Segurando"),
+	NoBottom UMETA(DisplayName = "Sem fundo") // auto altitude sem fundo no alcance do altímetro
 };
 
 /** Piloto automático vertical: profundidade OU altitude (os dois usam o heave, então são exclusivos) */
@@ -137,6 +154,10 @@ public:
 	float GetTargetDepth() const { return TargetDepthM; }
 	float GetTargetAltitude() const { return TargetAltitudeM; }
 
+	/** Em que fase cada piloto automático está agora (mostrado no HUD) */
+	EROVAutoPhase GetHeadingPhase() const;
+	EROVAutoPhase GetVerticalPhase() const;
+
 	/** Volta o ROV para onde ele nasceu, parado e com os propulsores zerados */
 	UFUNCTION(BlueprintCallable, Category = "ROV")
 	void ResetToStart();
@@ -187,6 +208,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV|Componentes")
 	TObjectPtr<UROVTcpCommandComponent> TcpCommands;
 
+	/** Sensores emulados em NMEA: girobússola e atitude (UDP), DVL (TCP), profundímetro e altímetro (COM) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV|Componentes")
+	TObjectPtr<UROVSensorEmulatorComponent> Sensors;
+
 	// =====================================================================
 	// Estado inicial
 	// =====================================================================
@@ -229,6 +254,14 @@ protected:
 	/** Distância do centro de carena acima do centro de gravidade (BG). Gera o momento que endireita o ROV. */
 	UPROPERTY(EditAnywhere, Category = "ROV|Simulador|Empuxo")
 	float BuoyancyCenterHeight = 20.f; // cm (estimado)
+
+	/**
+	 * Posição no eixo X (para frente) onde a força LATERAL da água atua, em relação ao centro de massa.
+	 * Negativo = atrás: a corrente lateral gira a proa para dentro da corrente, como um cata-vento.
+	 * Em ROVs reais isso vem do formato assimétrico e do cabo umbilical preso na popa.
+	 */
+	UPROPERTY(EditAnywhere, Category = "ROV|Simulador|Arrasto")
+	float LateralCenterOfPressureX = -30.f; // cm (estimado)
 
 	/** Coeficiente de arrasto por eixo do ROV (X surge, Y sway, Z heave) */
 	UPROPERTY(EditAnywhere, Category = "ROV|Simulador|Arrasto")
@@ -383,11 +416,11 @@ private:
 	EROVVerticalAuto VerticalAuto = EROVVerticalAuto::Off;
 	float TargetDepthM = 0.f;
 	float TargetAltitudeM = 0.f;
-	FVector TranslationCommand = FVector::ZeroVector;
+	FVector TranslationCommand = FVector::ZeroVector; // surge, sway e heave que vão para os propulsores
 
 	// "Segura onde parar": depois que o piloto solta (ou ao ligar o auto), freia antes de gravar o alvo
 	bool bHeadingSettling = false;
-	bool bVerticalSettling = false; // surge, sway e heave que vão para os propulsores
+	bool bVerticalSettling = false;
 
 	FTransform StartTransform; // onde o ROV nasceu (usado pelo RESET)
 };

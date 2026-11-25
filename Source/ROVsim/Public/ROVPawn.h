@@ -260,6 +260,14 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	// Multiplayer, modo demo (sem física): a Unreal teleportaria a cópia a cada pacote; guardamos o alvo e suavizamos
+	virtual void PostNetReceiveLocationAndRotation() override;
+	virtual void PostNetReceiveVelocity(const FVector& NewVelocity) override;
+
+	/** Velocidade do casco (cm/s), com ou sem física. O APawn padrão só sabe ler física ou um "movement
+	 *  component" (que o ROV não tem): no modo demo devolvia zero, e zero ia pela rede para os observadores. */
+	virtual FVector GetVelocity() const override;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void NotifyControllerChanged() override;
@@ -568,4 +576,12 @@ private:
 	UPROPERTY(ReplicatedUsing = OnRep_NetState)
 	FROVNetState NetState;
 	void FillNetState();
+
+	// Suavização da cópia do observador quando o ROV está sem física (modo demo)
+	void SmoothObserverCopy(float DeltaTime);
+	FVector NetTargetLocation = FVector::ZeroVector;   // cm, última posição recebida
+	FRotator NetTargetRotation = FRotator::ZeroRotator;
+	FVector NetTargetVelocity = FVector::ZeroVector;   // cm/s, para prever onde o ROV está agora
+	double NetTargetTime = 0.0;                        // quando o pacote chegou
+	bool bHasNetTarget = false;
 };

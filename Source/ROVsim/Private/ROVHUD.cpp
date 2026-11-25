@@ -183,7 +183,7 @@ void AROVHUD::DrawHUD()
 	// ---------------------------------------------------------------- estado
 	const float StatusH = DrawStatusBar({
 		{ TEXT("MODO"),     bSim ? TEXT("SIMULADOR (física real)") : TEXT("DEMONSTRAÇÃO (arcade, sem física)") },
-		{ TEXT("CÂMERA"),   bCockpit ? TEXT("cockpit (vídeo do ROV)") : TEXT("externa") },
+		{ TEXT("CÂMERA"),   bCockpit ? TEXT("cockpit (vídeo do ROV)") : (bObserver ? TEXT("livre (órbita em volta do ROV)") : TEXT("externa")) },
 		{ TEXT("LUZES"),    ROV->AreLightsOn() ? TEXT("ligadas") : TEXT("desligadas") },
 		{ TEXT("CONTROLE"), bObserver ? TEXT("OBSERVADOR (multiplayer: só assiste)") : bRemote ? TEXT("REMOTO (UDP 5000) · teclado/gamepad bloqueados") : TEXT("local") },
 	}, Margin, Margin, Accent);
@@ -398,10 +398,12 @@ void AROVHUD::DrawHUD()
 		TEXT("GAMEPAD   stick esq. sobe/gira   stick dir. anda/lateral   D-pad câmera   RB/LB zoom   Y câmera   X luzes"),
 		TEXT("          Menu modo   L3 auto rumo   R3 auto prof.   segurar B reset"),
 	};
-	if (!bObserver) // observador não pilota: a ajuda de teclas não se aplica
-	{
-		DrawPanel(Help, Margin, Canvas->ClipY - (Help.Num() * LineHeight + 2.f * Padding) - Margin, HintColor);
-	}
+	// Observador não pilota: mostra só os controles de câmera dele
+	static const TArray<FString> ObserverHelp = {
+		TEXT("OBSERVADOR   mouse / stick dir. orbitam   roda zoom   C / Y troca câmera livre <> câmera do ROV"),
+	};
+	const TArray<FString>& ShownHelp = bObserver ? ObserverHelp : Help;
+	DrawPanel(ShownHelp, Margin, Canvas->ClipY - (ShownHelp.Num() * LineHeight + 2.f * Padding) - Margin, HintColor);
 
 	// ---------------------------------------------------------------- retícula do cockpit
 	if (bCockpit)

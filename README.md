@@ -123,6 +123,7 @@ The bridge binds UDP 5001 and 10001–10004, so the PowerShell monitors cannot r
 | `rov_udp_monitor.ps1` | Shows the UDP telemetry, counts lost packets |
 | `rov_tcp_console.ps1` | Interactive TCP command console |
 | `rov_nmea_monitor.ps1 [-ComPort COM21]` | Listens to all sensor outputs, validates checksums, measures rates |
+| `rov_net_compare.ps1 -HostLog .. -ObserverLog ..` | Aligns host and observer ROV traces (`-ROVNetTrace`): measured delay and remaining error |
 
 ## Multiplayer (work in progress)
 
@@ -137,8 +138,30 @@ UnrealEditor.exe ROVsim.uproject "/Game/Maps/Underwater1?listen" -game -windowed
 UnrealEditor.exe ROVsim.uproject 127.0.0.1 -game -windowed                          # observer
 ```
 
-`-ROVObserverTest[=seconds]` on the observer logs what it receives every 2 s (same fields as the smoke
-test, so both logs can be compared), takes two screenshots and exits.
+**Observer camera**: free orbit around the ROV (mouse or right stick, wheel to zoom, follows the heading,
+collides with the seabed); `C` / `Y` switches to the ROV's own video camera. It is local: the pilot's
+view does not change.
+
+**Network test** (one machine, a bad link emulated with the engine's packet simulation):
+
+```
+# host: smoke test + ROV position trace at 10 Hz
+UnrealEditor.exe ROVsim.uproject "/Game/Maps/Underwater1?listen" -game -ROVSmokeTest -ROVNetTrace -ABSLOG=<dir>\NetHost.log
+# observer: 150-250 ms delay and 5% loss on everything it receives
+UnrealEditor.exe ROVsim.uproject 127.0.0.1 -game -ROVObserverTest=90 -ROVNetTrace -PktIncomingLagMin=150 -PktIncomingLagMax=250 -PktIncomingLoss=5 -ABSLOG=<dir>\NetClient.log
+.\Tools\rov_net_compare.ps1 -HostLog <dir>\NetHost.log -ObserverLog <dir>\NetClient.log
+```
+
+`-ROVObserverTest[=seconds]` logs what the observer receives, checks smoothness (largest per-frame jump
+beyond what the velocity explains, after a 3 s join convergence), takes a free-camera and a ROV-camera
+screenshot and exits. `rov_net_compare.ps1` finds the time shift that best aligns both traces (the
+measured delay) and the error left after aligning. Measured with the bad link: delay 210 ms, error after
+alignment 3.3 cm RMS.
+
+With physics (Simulator mode) the engine smooths the observer's copy. Without physics (Demo mode) it
+would teleport the copy on every packet (up to 0.9 m jumps with packet loss), so the observer copy stores
+the last received state and each frame extrapolates it with the replicated velocity, correcting the
+remaining error gradually (dead reckoning).
 
 ## Code
 

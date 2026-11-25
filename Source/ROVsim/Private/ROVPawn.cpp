@@ -326,6 +326,7 @@ void AROVPawn::Tick(float DeltaTime)
 	// Observador: NÃO simula nada (quem manda é o servidor). Só cuida da câmera; posição e telemetria chegam pela rede.
 	if (IsObserverCopy())
 	{
+		SmoothObserverCopy(DeltaTime);
 		UpdateCameras(DeltaTime);
 		return;
 	}
@@ -614,6 +615,10 @@ void AROVPawn::TickDemo(float DeltaTime)
 	const FVector TargetVelocity = Heading.RotateVector(TranslationCommand * DemoMaxSpeed);
 	DemoVelocityMs += (TargetVelocity - DemoVelocityMs) * Blend;
 	DemoYawRateDeg += (YawCommand * DemoYawRate - DemoYawRateDeg) * Blend;
+
+	// Sem física, mover o ator não atualiza a velocidade do componente; é ela que a Unreal manda pela rede
+	// (GetVelocity) e que os observadores usam para prever o movimento entre pacotes. Sem isto ia zero.
+	Hull->ComponentVelocity = DemoVelocityMs * CmPerM;
 
 	// Rotação: só yaw
 	SetActorRotation(FRotator(0.f, Heading.Yaw + DemoYawRateDeg * DeltaTime, 0.f));
@@ -1432,4 +1437,74 @@ void AROVPawn::OnRep_NetState()
 void AROVPawn::OnRep_LightsOn()
 {
 	SetLightsOn(bLightsOn);
+}
+
+// -----------------------------------------------------------------------------
+// Suavização no modo demo (sem física)
+//
+// Com física, a Unreal já suaviza a cópia do observador (puxa o corpo aos poucos até o estado do
+// servidor). Sem física, ela TELEPORTA a cópia a cada pacote: a 8 m/s e 30 pacotes/s são saltos de
+// ~27 cm, e com perda de pacotes o salto dobra ou triplica (medido: 0,9 m). Aqui fazemos o que jogos
+// em rede fazem: guardamos o último estado recebido e, a cada frame, PREVEMOS onde o ROV está agora
+// (posição + velocidade x tempo desde o pacote: extrapolação) e deslizamos suavemente até lá.
+// -----------------------------------------------------------------------------
+
+void AROVPawn::PostNetReceiveVelocity(const FVector& NewVelocity)
+{
+	Super::PostNetReceiveVelocity(NewVelocity);
+	NetTargetVelocity = NewVelocity;
+}
+
+void AROVPawn::PostNetReceiveLocationAndRotation()
+{
+	if (!IsObserverCopy())
+	{
+		Super::PostNetReceiveLocationAndRotation();
+		return;
+	}
+
+	const FRepMovement& Movement = GetReplicatedMovement();
+	NetTargetLocation = FRepMovement::RebaseOntoLocalOrigin(Movement.Location, this);
+	NetTargetRotation = Movement.Rotation;
+	NetTargetTime = GetWorld()->GetTimeSeconds();
+
+	// Primeiro pacote, ou salto enorme (reset, teleporte): vai direto, sem deslizar
+	if (!bHasNetTarget || FVector::Dist(NetTargetLocation, GetActorLocation()) > 500.f)
+	{
+		Super::PostNetReceiveLocationAndRotation();
+	}
+	bHasNetTarget = true;
+}
+
+void AROVPawn::SmoothObserverCopy(float DeltaTime)
+{
+	// Com física quem suaviza é a Unreal (replicação de física); só agimos com o corpo cinemático (demo)
+	if (!bHasNetTarget || Hull->IsSimulatingPhysics())
+	{
+		return;
+	}
+
+	// Onde o ROV deve estar AGORA: o último pacote + o quanto ele andou desde então (no máximo 0,5 s:
+	// se os pacotes pararem de chegar, não "foge" em linha reta para sempre)
+	const float SincePacket = FMath::Min(static_cast<float>(GetWorld()->GetTimeSeconds() - NetTargetTime), 0.5f);
+	const FVector Predicted = NetTargetLocation + NetTargetVelocity * SincePacket;
+
+	// 1) Anda o que a velocidade manda neste frame; 2) corrige aos poucos o erro que sobrar (~15% por
+	// frame a 60 FPS, independente do FPS). Só "deslizar até o alvo" deixaria a cópia sempre atrasada
+	// em velocidade/10 (0,8 m a 8 m/s): um filtro desses persegue um alvo em movimento de longe.
+	const float Blend = 1.f - FMath::Exp(-10.f * DeltaTime);
+	const FVector Advanced = GetActorLocation() + NetTargetVelocity * DeltaTime;
+	const FVector NewLocation = FMath::Lerp(Advanced, Predicted, Blend);
+	const FRotator NewRotation = FMath::RInterpTo(GetActorRotation(), NetTargetRotation, DeltaTime, 10.f);
+	SetActorLocationAndRotation(NewLocation, NewRotation, false, nullptr, ETeleportType::TeleportPhysics);
+
+	// Para quem consulta GetVelocity() (o teste de suavidade, por exemplo)
+	Hull->ComponentVelocity = NetTargetVelocity;
+}
+
+FVector AROVPawn::GetVelocity() const
+{
+	// Com física: a do corpo rígido. Sem física (demo): a ComponentVelocity que o TickDemo preenche
+	// (no servidor) ou que SmoothObserverCopy preenche (na cópia do observador).
+	return Hull ? Hull->GetComponentVelocity() : Super::GetVelocity();
 }

@@ -19,6 +19,7 @@ class UInputAction;
 class UROVUdpLinkComponent;
 class UROVTcpCommandComponent;
 class UROVSensorEmulatorComponent;
+class UNiagaraComponent;
 struct FInputActionValue;
 
 // Categoria de log própria: filtrar por "LogROV" no Output Log
@@ -151,6 +152,9 @@ public:
 	/** Elevação da superfície por causa do swell, η = a·cos θ, em metros (+ = crista) */
 	float GetSwellElevationM(const FVector& LocationCm) const;
 
+	/** Rampa de entrada do swell: 0 ao ligar, 1 depois de 2 períodos (evita o "tranco" de ligar a onda de uma vez) */
+	float GetSwellRamp() const;
+
 	/** Velocidade total da água num ponto: corrente + swell, em m/s */
 	FVector GetWaterVelocityMs(const FVector& LocationCm) const;
 
@@ -260,6 +264,10 @@ protected:
 	/** Sensores emulados em NMEA: girobússola e atitude (UDP), DVL (TCP), profundímetro e altímetro (COM) */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV|Componentes")
 	TObjectPtr<UROVSensorEmulatorComponent> Sensors;
+
+	/** Neve marinha (Niagara): flocos suspensos em volta da câmera ativa, parados na água (espaço do mundo) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ROV|Componentes")
+	TObjectPtr<UNiagaraComponent> MarineSnow;
 
 	// =====================================================================
 	// Estado inicial
@@ -420,6 +428,7 @@ private:
 	void UpdateAutoPosition(float DeltaTime);
 	float GetSubmergedFraction() const;
 	void ApplyCameraLimits();
+	bool IsLocalPilotingBlocked() const;
 
 	// --- Input (criado em C++, sem depender de assets) ---
 	void BuildInputMappings();
@@ -468,14 +477,17 @@ private:
 	FROVTelemetry Telemetry;
 
 	// --- Pilotos automáticos ---
-	// Rumo: PD (sem I). Kp = 0,08 por grau, Kd = 0,10 por grau/s. Ganhos ajustados simulando o yaw do ROV.
-	FROVPid HeadingPid = FROVPid(0.08f, 0.f, 0.10f);
+	// Rumo: PID. Kp = 0,08 por grau, Ki = 0,01 por grau·s, Kd = 0,10 por grau/s.
+	// O I entrou para o station keeping: com o ROV PARADO contra uma corrente de lado, o efeito
+	// cata-vento puxa a proa o tempo todo (~14% do yaw com 1 nó). Só com P, sobrava ~2° de erro fixo.
+	// (Derivando junto com a corrente não aparece: sem água passando pelo casco, não há cata-vento.)
+	FROVPid HeadingPid = FROVPid(0.08f, 0.01f, 0.10f);
 	bool bAutoHeading = false;
 	float TargetHeadingDeg = 0.f;
 	float YawCommand = 0.f; // o yaw que vai para os propulsores: do piloto ou do auto heading
 
 	// Vertical: PID com I (a flutuação positiva é uma força constante). Ganhos ajustados simulando o heave;
-	// o limite do I (0,1) é configurado no construtor.
+	// o limite do I (0,1) é configurado no construtor. Com swell, UpdateAutoVertical troca para ganhos mais lentos.
 	FROVPid DepthPid = FROVPid(0.8f, 0.08f, 1.5f);
 	EROVVerticalAuto VerticalAuto = EROVVerticalAuto::Off;
 	float TargetDepthM = 0.f;
@@ -500,6 +512,11 @@ private:
 	FROVNotchFilter WaveFilterPosN, WaveFilterPosE, WaveFilterVelN, WaveFilterVelE;
 	FVector2D FilteredPositionM = FVector2D::ZeroVector;
 	FVector2D FilteredVelocityMs = FVector2D::ZeroVector;
+
+	// Filtro de ondas também no vertical (auto depth/altitude): sem ele, o heave corre atrás de cada onda
+	FROVNotchFilter WaveFilterDepth, WaveFilterAltitude, WaveFilterVerticalSpeed;
+
+	float SwellStartTime = 0.f; // quando o swell foi ligado (para a rampa de entrada)
 
 	FTransform StartTransform; // onde o ROV nasceu (usado pelo RESET)
 };

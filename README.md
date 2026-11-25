@@ -39,7 +39,7 @@ Gamepad sticks use a 15% dead zone and a quadratic response curve.
 | Added mass | 0.4 / 0.7 / 0.9 of the mass (surge / sway / heave), 0.5 for inertia |
 | Thrusters | Surge 650 kgf, heave 550 kgf (MBARI), 0.25 s first-order response, lose thrust out of the water |
 | Current | Speed (knots) and direction it flows **toward** (0° = North); lateral force acts 30 cm aft of the CG, so a cross current yaws the bow into it (weathervane) |
-| Swell | Linear (Airy) deep-water waves: height, period and direction it comes **from** (0° = North — the opposite of the current convention). λ = gT²/2π; the orbital water velocity a·ω·e^(−kz) is added to the current for drag, plus the Morison inertia force (Froude-Krylov + added mass) from the water acceleration, so a near-neutral ROV rides the orbits; the surface elevation η changes the submerged fraction near the surface. Height capped at λ/7 (breaking limit) |
+| Swell | Linear (Airy) deep-water waves: height, period and direction it comes **from** (0° = North — the opposite of the current convention). λ = gT²/2π; the orbital water velocity a·ω·e^(−kz) is added to the current for drag, plus the Morison inertia force (Froude-Krylov + added mass) from the water acceleration, so a near-neutral ROV rides the orbits; the surface elevation η changes the submerged fraction near the surface. Height capped at λ/7 (breaking limit). Amplitude ramps up over 2 periods when switched on, to avoid a start-up transient |
 
 Resulting top speeds: surge ≈ 1.6 m/s (3.2 kn), heave ≈ 1.2 m/s, yaw ≈ 29°/s — in line with a real
 work-class ROV. A 3 kn current (1.54 m/s) leaves the vehicle at its limit.
@@ -47,11 +47,18 @@ work-class ROV. A 3 kn current (1.54 m/s) leaves the vehicle at its limit.
 **Demo mode**: arcade controls with no physics (8 m/s forward, 5 m/s lateral/vertical, 90°/s yaw),
 level attitude and swept collision against the seabed.
 
+**Marine snow**: a Niagara system (`/Game/ROV/FX/NS_MarineSnow`, ~10,000 slowly sinking flakes in a 24 × 24 × 14 m box) follows the active camera in world space, so flakes stream past as the ROV moves — the main visual cue of motion underwater. The asset is generated from the engine's HangingParticulates template by an editor commandlet:
+
+```
+UnrealEditor-Cmd.exe ROVsim.uproject -run=ROVCreateMarineSnow
+```
+
 ## Autopilots
 
-- **Auto heading**: PD controller, shortest-path error across 359°/0°.
+- **Auto heading**: PID controller, shortest-path error across 359°/0°. The integral (limited to 30%) cancels the weathervane torque when the vehicle is held against a cross current.
 - **Auto depth / auto altitude** (mutually exclusive, both on the heave axis): PID with the integral
-  limited to 10% of thrust — enough to hold the 13 kg positive buoyancy without windup.
+  limited to 10% of thrust — enough to hold the 13 kg positive buoyancy without windup. A wave filter (notch at
+  the swell frequency) holds the mean depth and lets the vehicle ride the waves instead of chasing them.
 - Pilot input moves the target (as in commercial ROVs and ArduSub); after release the autopilot
   brakes and latches the target where the vehicle stops. The HUD shows the phase:
   *ajustando → freando → segurando* (adjusting → braking → holding).
@@ -67,7 +74,7 @@ level attitude and swept collision against the seabed.
 
 | Port | Protocol | Direction | Content |
 |---|---|---|---|
-| 5000 | UDP, JSON | in | Pilot commands `{"type":"cmd","seq":n,"surge","sway","heave","yaw"}` with a 0.5 s watchdog |
+| 5000 | UDP, JSON | in | Pilot commands `{"type":"cmd","seq":n,"surge","sway","heave","yaw"}` with a 0.5 s watchdog; while commands arrive, local keyboard/gamepad piloting is blocked (camera stays free) |
 | 5001 | UDP, JSON | out | Telemetry at 10 Hz (position, depth, altitude, attitude, velocities) |
 | 5002 | TCP, text lines | in/out | Commands with replies: `PING`, `STATUS`, `MODE SIM\|DEMO`, `LIGHTS ON\|OFF`, `CAMERA EXT\|COCKPIT`, `RESET`, `CURRENT <kn> <deg>`, `SWELL <height_m> <period_s> <from_deg>` (`SWELL 0` = off), `AUTO HEADING\|DEPTH\|ALT ON\|OFF\|<value>`, `AUTO POS ON\|OFF\|<north_m> <east_m>`, `AUTO OFF` |
 
@@ -123,7 +130,8 @@ The bridge binds UDP 5001 and 10001–10004, so the PowerShell monitors cannot r
 |---|---|
 | `ROVPawn` | Vehicle: components, both control modes, physics, current, swell, autopilots, cameras, input |
 | `ROVPid.h` | PID controller (saturation, anti-windup, derivative on measurement) |
-| `ROVNotch.h` | Notch (band-stop) filter used as the station-keeping wave filter |
+| `ROVNotch.h` | Notch (band-stop) filter used as the wave filter (station keeping, auto depth/altitude) |
+| `ROVsimTools` (editor module) | `ROVCreateMarineSnow` commandlet that builds the marine snow Niagara asset |
 | `ROVNmea.h` | NMEA sentence builder and checksum validation |
 | `ROVUdpLinkComponent` | UDP command input (own receive thread) and telemetry output |
 | `ROVTcpCommandComponent` | TCP command server with line framing |
@@ -144,10 +152,10 @@ UnrealEditor-Cmd.exe ROVsim.uproject -ExecCmds="Automation RunTests ROVsim" -Tes
 - `ROVsim.NMEA`: checksum against a reference sentence, validation of corrupted sentences
 - `ROVsim.Notch`: wave filter removes a 10 s wave, passes slow drift and constants
 
-**Smoke test** (runs the game ~7.5 minutes and exits): flies both modes and both cameras, checks seabed
-collision, pitch/roll stability, current drift, the three autopilots, the swell (heave period and
-e^(−kz) decay between ~34 m and ~8 m deep) and station keeping (1 kn cross current + 2 m swell at
-15 m: mean offset, peak offset and thruster activity), logs telemetry (`LogROV`)
+**Smoke test** (runs the game ~8 minutes and exits): flies both modes and both cameras, checks seabed
+collision, pitch/roll stability, current drift, the three autopilots, the swell (heave period,
+e^(−kz) decay between ~34 m and ~8 m deep, no drift) and station keeping (1 kn cross current + 2 m swell at
+15 m: mean offset, peak offset, thruster activity, heave not chasing waves, zero mean heading error), logs telemetry (`LogROV`)
 and saves screenshots to `Saved/Screenshots/WindowsEditor/SmokeTest/`:
 
 ```

@@ -66,33 +66,58 @@ void AROVGameMode::TakeScreenshot(const FString& Name) const
 	UE_LOG(LogROV, Display, TEXT("SMOKE screenshot: %s"), *File);
 }
 
-AROVGameMode::FOscillation AROVGameMode::AnalyzeOscillation(const TArray<FVector2D>& Samples)
+AROVGameMode::FOscillation AROVGameMode::AnalyzeOscillation(const TArray<FVector2D>& Samples, double OmegaRadS)
 {
 	FOscillation Result;
 	const int32 N = Samples.Num();
-	if (N < 3)
+	if (N < 8)
 	{
 		return Result;
 	}
 
-	// 1) Reta por mínimos quadrados (profundidade = A + B·t): é a deriva lenta, que tiramos do sinal
-	double SumT = 0, SumZ = 0, SumTT = 0, SumTZ = 0;
+	// 1) Ajuste por mínimos quadrados de RETA + SENOIDE juntas:  z(t) = A + B·t + C·cos ωt + D·sin ωt
+	//    Ajustar só a reta erra: uma senoide numa janela finita "parece" inclinada (até ±0,02 m/s com
+	//    0,8 m de amplitude e 3 períodos). Ajustando as duas juntas, B mede só a deriva de verdade.
+	//    Equações normais: (Xᵀ X)·p = Xᵀ z, com X = [1, t, cos ωt, sin ωt] (4x4), resolvidas por Gauss.
+	const double T0 = Samples[0].X; // tempo relativo ao início: números menores, conta mais precisa
+	double M[4][5] = {};
 	for (const FVector2D& S : Samples)
 	{
-		SumT += S.X; SumZ += S.Y; SumTT += S.X * S.X; SumTZ += S.X * S.Y;
+		const double T = S.X - T0;
+		const double Row[4] = { 1.0, T, FMath::Cos(OmegaRadS * T), FMath::Sin(OmegaRadS * T) };
+		for (int32 i = 0; i < 4; ++i)
+		{
+			for (int32 j = 0; j < 4; ++j) { M[i][j] += Row[i] * Row[j]; }
+			M[i][4] += Row[i] * S.Y;
+		}
 	}
-	const double B = (N * SumTZ - SumT * SumZ) / FMath::Max(N * SumTT - SumT * SumT, 1e-9);
-	const double A = (SumZ - B * SumT) / N;
-	Result.MeanDepthM = static_cast<float>(SumZ / N);
+	for (int32 Col = 0; Col < 4; ++Col) // eliminação de Gauss com pivô parcial
+	{
+		int32 Pivot = Col;
+		for (int32 r = Col + 1; r < 4; ++r) { if (FMath::Abs(M[r][Col]) > FMath::Abs(M[Pivot][Col])) { Pivot = r; } }
+		for (int32 c = 0; c < 5; ++c) { Swap(M[Col][c], M[Pivot][c]); }
+		for (int32 r = 0; r < 4; ++r)
+		{
+			if (r == Col || FMath::Abs(M[Col][Col]) < 1e-12) { continue; }
+			const double F = M[r][Col] / M[Col][Col];
+			for (int32 c = Col; c < 5; ++c) { M[r][c] -= F * M[Col][c]; }
+		}
+	}
+	double P[4];
+	for (int32 i = 0; i < 4; ++i) { P[i] = FMath::Abs(M[i][i]) > 1e-12 ? M[i][4] / M[i][i] : 0.0; }
+	const double A = P[0], B = P[1];
 
-	// 2) No que sobra (só a oscilação): amplitude pelo pico a pico e período pelos cruzamentos do zero
-	double Min = TNumericLimits<double>::Max(), Max = TNumericLimits<double>::Lowest();
+	double SumZ = 0;
+	for (const FVector2D& S : Samples) { SumZ += S.Y; }
+	Result.MeanDepthM = static_cast<float>(SumZ / N);
+	Result.DriftMs = static_cast<float>(B);
+	Result.AmplitudeM = static_cast<float>(FMath::Sqrt(P[2] * P[2] + P[3] * P[3])); // amplitude da senoide ajustada
+
+	// 2) Período MEDIDO de forma independente (o ajuste acima supõe ω): cruzamentos do zero do sinal sem a deriva
 	double FirstCrossing = 0, LastCrossing = 0, Previous = 0;
 	for (int32 i = 0; i < N; ++i)
 	{
-		const double Residual = Samples[i].Y - (A + B * Samples[i].X);
-		Min = FMath::Min(Min, Residual);
-		Max = FMath::Max(Max, Residual);
+		const double Residual = Samples[i].Y - (A + B * (Samples[i].X - T0));
 		if (i > 0 && Previous < 0.0 && Residual >= 0.0)
 		{
 			// Interpola entre as duas amostras o instante exato em que o sinal passou pelo zero
@@ -103,7 +128,6 @@ AROVGameMode::FOscillation AROVGameMode::AnalyzeOscillation(const TArray<FVector
 		}
 		Previous = Residual;
 	}
-	Result.AmplitudeM = static_cast<float>(0.5 * (Max - Min));
 	Result.PeriodS = Result.Crossings > 1 ? static_cast<float>((LastCrossing - FirstCrossing) / (Result.Crossings - 1)) : 0.f;
 	return Result;
 }
@@ -133,6 +157,8 @@ void AROVGameMode::Tick(float DeltaSeconds)
 	{
 		HoldOffsets.Add(ROV->GetPositionOffsetM());
 		HoldThrust.Add(FVector2D(ROV->GetTelemetry().ThrustPercent.X, ROV->GetTelemetry().ThrustPercent.Y));
+		HoldVertical.Add(FVector2D(ROV->GetTelemetry().ThrustPercent.Z,
+			FMath::FindDeltaAngleDegrees(ROV->GetTargetHeading(), ROV->GetTelemetry().HeadingDeg)));
 	}
 
 	// Telemetria a cada segundo
@@ -218,24 +244,28 @@ void AROVGameMode::Tick(float DeltaSeconds)
 		// na análise (reta ajustada por mínimos quadrados).
 		{ 221.f, [&] { ROV->SetSwell(2.f, 10.f, 0.f); ROV->SetPilotCommand(FVector(0.f, 0.f, -0.025f), 0.f);
 		               LogTelemetry(TEXT("SIM swell on")); } },
-		{ 231.f, [&] { SwellSamples.Reset(); bSwellSampling = true; } },
-		{ 261.f, [&] {
+		{ 246.f, [&] { SwellSamples.Reset(); bSwellSampling = true; } },
+		{ 276.f, [&] {
 			bSwellSampling = false;
-			SwellDeep = AnalyzeOscillation(SwellSamples);
-			UE_LOG(LogROV, Display, TEXT("SMOKE swell fundo: prof. média %.2f m, período %.2f s, amplitude %.3f m (%d cruzamentos)"),
-				SwellDeep.MeanDepthM, SwellDeep.PeriodS, SwellDeep.AmplitudeM, SwellDeep.Crossings);
+			SwellDeep = AnalyzeOscillation(SwellSamples, 2.0 * PI / ROV->GetSwellPeriodS());
+			UE_LOG(LogROV, Display, TEXT("SMOKE swell fundo: prof. média %.2f m, período %.2f s, amplitude %.3f m, deriva %+.3f m/s (%d cruzamentos)"),
+				SwellDeep.MeanDepthM, SwellDeep.PeriodS, SwellDeep.AmplitudeM, SwellDeep.DriftMs, SwellDeep.Crossings);
 			ROV->SetPilotCommand(FVector::ZeroVector, 0.f);
 			ROV->SetTargetDepth(8.f); // sobe para perto da superfície (o auto aguenta o swell no caminho)
 		} },
-		{ 266.f, [&] { TakeScreenshot(TEXT("11_sim_swell_subindo")); } },
-		{ 311.f, [&] { LogTelemetry(TEXT("SIM swell 8 m")); ROV->SetAutoDepth(false);
+		{ 281.f, [&] { TakeScreenshot(TEXT("11_sim_swell_subindo")); } },
+		{ 326.f, [&] { LogTelemetry(TEXT("SIM swell 8 m")); ROV->SetAutoDepth(false);
 		               ROV->SetPilotCommand(FVector(0.f, 0.f, -0.025f), 0.f); } },
-		{ 316.f, [&] { SwellSamples.Reset(); bSwellSampling = true; } },
-		{ 346.f, [&] {
+		{ 331.f, [&] { SwellSamples.Reset(); bSwellSampling = true; } },
+		{ 361.f, [&] {
 			bSwellSampling = false;
-			const FOscillation Near = AnalyzeOscillation(SwellSamples);
-			UE_LOG(LogROV, Display, TEXT("SMOKE swell perto: prof. média %.2f m, período %.2f s, amplitude %.3f m (%d cruzamentos)"),
-				Near.MeanDepthM, Near.PeriodS, Near.AmplitudeM, Near.Crossings);
+			const FOscillation Near = AnalyzeOscillation(SwellSamples, 2.0 * PI / ROV->GetSwellPeriodS());
+			UE_LOG(LogROV, Display, TEXT("SMOKE swell perto: prof. média %.2f m, período %.2f s, amplitude %.3f m, deriva %+.3f m/s (%d cruzamentos)"),
+				Near.MeanDepthM, Near.PeriodS, Near.AmplitudeM, Near.DriftMs, Near.Crossings);
+			// Pendência corrigida: o ROV afundava 0,03-0,08 m/s durante a medição. Era um transitório (onda ligada de
+			// uma vez; ROV solto pelo auto depth que lutava contra a onda). Com a rampa e o filtro, a deriva some.
+			UE_LOG(LogROV, Display, TEXT("SMOKE CHECK swell sem deriva: %s (fundo %+.3f m/s, perto %+.3f m/s; limite 0,02)"),
+				FMath::Abs(SwellDeep.DriftMs) < 0.02f && FMath::Abs(Near.DriftMs) < 0.02f ? TEXT("PASSOU") : TEXT("FALHOU"), SwellDeep.DriftMs, Near.DriftMs);
 
 			const float Wavelength = ROV->GetSwellWavelengthM();
 			const float K = 2.f * PI / Wavelength;
@@ -259,13 +289,13 @@ void AROVGameMode::Tick(float DeltaSeconds)
 		// Station keeping: 1 nó de corrente do Sul para o Norte, proa para o Leste (corrente de LADO,
 		// o pior caso: área lateral maior e sway mais fraco) e swell de 2 m / 10 s vindo do Sul, a 15 m.
 		// Sem o auto, o ROV derivaria ~20 m nos 40 s de medição.
-		{ 347.f, [&] { ROV->SetPilotCommand(FVector::ZeroVector, 0.f);
+		{ 362.f, [&] { ROV->SetPilotCommand(FVector::ZeroVector, 0.f);
 		               ROV->SetCurrent(1.f, 0.f); ROV->SetSwell(2.f, 10.f, 180.f);
 		               ROV->SetTargetHeading(90.f); ROV->SetTargetDepth(15.f); ROV->SetPositionHold(true);
 		               LogTelemetry(TEXT("SIM station keeping on")); } },
-		{ 377.f, [&] { TakeScreenshot(TEXT("13_sim_station_keeping")); } },
-		{ 407.f, [&] { HoldOffsets.Reset(); HoldThrust.Reset(); bHoldSampling = true; } },
-		{ 447.f, [&] {
+		{ 392.f, [&] { TakeScreenshot(TEXT("13_sim_station_keeping")); } },
+		{ 422.f, [&] { HoldOffsets.Reset(); HoldThrust.Reset(); HoldVertical.Reset(); bHoldSampling = true; } },
+		{ 462.f, [&] {
 			bHoldSampling = false;
 			const int32 N = FMath::Max(HoldOffsets.Num(), 1);
 
@@ -288,6 +318,17 @@ void AROVGameMode::Tick(float DeltaSeconds)
 			const double OrbitRadius = 0.5 * ROV->GetSwellHeightM() * ROV->GetSwellAttenuation(ROV->GetTelemetry().DepthM);
 
 			const bool bPassed = MeanOffset.Size() < 0.3 && MaxOffset < OrbitRadius + 0.6 && ThrustStd < 10.0;
+
+			// Auto depth com filtro de ondas: o heave NÃO pode ficar correndo atrás da onda (antes oscilava ±48%).
+			// Auto heading com I: o erro de rumo médio tem que ir a zero mesmo com o cata-vento (antes ~2°).
+			double HeaveMean = 0.0, HeadingMean = 0.0, HeaveVariance = 0.0;
+			for (const FVector2D& V : HoldVertical) { HeaveMean += V.X / N; HeadingMean += V.Y / N; }
+			for (const FVector2D& V : HoldVertical) { HeaveVariance += FMath::Square(V.X - HeaveMean) / N; }
+			const double HeaveStd = FMath::Sqrt(HeaveVariance);
+			UE_LOG(LogROV, Display, TEXT("SMOKE CHECK filtro de ondas no auto depth: %s (variação do heave %.1f%%, média %+.1f%%)"),
+				HeaveStd < 10.0 ? TEXT("PASSOU") : TEXT("FALHOU"), HeaveStd, HeaveMean);
+			UE_LOG(LogROV, Display, TEXT("SMOKE CHECK auto heading com corrente de lado: %s (erro médio de rumo %+.2f graus)"),
+				FMath::Abs(HeadingMean) < 0.5 ? TEXT("PASSOU") : TEXT("FALHOU"), HeadingMean);
 			UE_LOG(LogROV, Display,
 				TEXT("SMOKE CHECK station keeping: %s (desvio médio %.3f m, máximo %.2f m com órbita da onda de %.2f m; empuxo médio surge %+.1f%% sway %+.1f%%, variação %.1f%%; sem o auto derivaria %.0f m)"),
 				bPassed ? TEXT("PASSOU") : TEXT("FALHOU"), MeanOffset.Size(), MaxOffset, OrbitRadius,
@@ -296,7 +337,7 @@ void AROVGameMode::Tick(float DeltaSeconds)
 			ROV->SetPositionHold(false); ROV->SetAutoHeading(false); ROV->SetAutoDepth(false);
 			ROV->SetCurrent(0.f, 0.f); ROV->SetSwell(0.f, 10.f, 0.f);
 		} },
-		{ 448.f, [&] { UE_LOG(LogROV, Display, TEXT("SMOKE TEST concluído"));
+		{ 463.f, [&] { UE_LOG(LogROV, Display, TEXT("SMOKE TEST concluído"));
 		               FGenericPlatformMisc::RequestExit(false, TEXT("ROVSmokeTest")); } },
 	};
 

@@ -8,7 +8,7 @@ public class ROVsim : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "Niagara" });
 
         // Rede: Sockets (socket "cru"), Networking (receptor UDP em thread própria), Json (ler/escrever JSON)
         PrivateDependencyModuleNames.AddRange(new string[] { "Sockets", "Networking", "Json" });

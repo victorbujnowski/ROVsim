@@ -20,6 +20,8 @@
 #include "ROVUdpLinkComponent.h"
 #include "ROVTcpCommandComponent.h"
 #include "ROVSensorEmulatorComponent.h"
+#include "NiagaraComponent.h"
+#include "NiagaraSystem.h"
 
 DEFINE_LOG_CATEGORY(LogROV);
 
@@ -136,6 +138,9 @@ AROVPawn::AROVPawn()
 	// Limitar o I a 10% dá folga para isso sem deixá-lo acumular durante uma descida longa.
 	DepthPid.IntegralLimit = 0.1f;
 
+	// Auto heading: o I só precisa cobrir o torque do cata-vento (~14% com 1 nó de lado); 30% dá folga sem acumular demais
+	HeadingPid.IntegralLimit = 0.3f;
+
 	// Station keeping: saída em frações de MaxThrust.Y (4000 N). Limite 1,6 = 6375 N, o empuxo de surge.
 	// O I pode chegar a 0,8 (3200 N): 1 nó de corrente de lado pede ~1400 N, de frente ~800 N.
 	for (FROVPid* Pid : { &NorthPid, &EastPid })
@@ -148,6 +153,18 @@ AROVPawn::AROVPawn()
 	UdpLink = CreateDefaultSubobject<UROVUdpLinkComponent>(TEXT("UdpLink"));
 	TcpCommands = CreateDefaultSubobject<UROVTcpCommandComponent>(TEXT("TcpCommands"));
 	Sensors = CreateDefaultSubobject<UROVSensorEmulatorComponent>(TEXT("Sensors"));
+
+	// Neve marinha: o asset NS_MarineSnow é criado pelo commandlet ROVCreateMarineSnow (módulo ROVsimTools).
+	// Fica presa na câmera ativa (ver SetCameraMode): os flocos nascem numa caixa em volta de quem olha
+	// e ficam parados no mundo, então passam pela câmera quando o ROV anda - é a melhor pista visual de
+	// movimento debaixo d'água, onde quase não há referência. Brilham mais perto dos faróis.
+	MarineSnow = CreateDefaultSubobject<UNiagaraComponent>(TEXT("MarineSnow"));
+	MarineSnow->SetupAttachment(ExternalCamera);
+	static ConstructorHelpers::FObjectFinder<UNiagaraSystem> SnowSystem(TEXT("/Game/ROV/FX/NS_MarineSnow.NS_MarineSnow"));
+	if (SnowSystem.Succeeded())
+	{
+		MarineSnow->SetAsset(SnowSystem.Object);
+	}
 
 	// Quem cria e possui o ROV é o AROVGameMode (no PlayerStart), por isso não há AutoPossess aqui.
 }
@@ -215,6 +232,9 @@ void AROVPawn::SetCameraMode(EROVCameraMode NewMode)
 	// A Unreal usa a primeira câmera ATIVA do Pawn como ponto de vista
 	ExternalCamera->SetActive(bExternal);
 	CockpitCamera->SetActive(!bExternal);
+
+	// A neve acompanha a câmera ativa
+	MarineSnow->AttachToComponent(bExternal ? ExternalCamera.Get() : CockpitCamera.Get(), FAttachmentTransformRules::SnapToTargetNotIncludingScale);
 
 	if (bExternal)
 	{
@@ -354,6 +374,12 @@ namespace ROVSwell
 
 void AROVPawn::SetSwell(float HeightM, float PeriodS, float FromDeg)
 {
+	// Ligando agora (estava desligado): começa a rampa de entrada
+	if (!IsSwellOn() && HeightM > 0.f && GetWorld())
+	{
+		SwellStartTime = GetWorld()->GetTimeSeconds();
+	}
+
 	SwellPeriodS = FMath::Clamp(PeriodS, 2.f, 30.f);
 	// Uma onda real quebra quando fica íngreme demais: altura máxima ≈ 1/7 do comprimento (limite de Stokes)
 	const float MaxHeight = GetSwellWavelengthM() / 7.f;
@@ -386,7 +412,7 @@ void AROVPawn::GetSwellKinematics(const FVector& LocationCm, FVector& OutVelocit
 
 	const float Omega = 2.f * PI / SwellPeriodS;
 	const float K = 2.f * PI / GetSwellWavelengthM();
-	const float Amplitude = 0.5f * SwellHeightM;
+	const float Amplitude = 0.5f * SwellHeightM * GetSwellRamp();
 
 	// "De onde vem" + 180° = "para onde vai" (direção de propagação)
 	const float FromRad = FMath::DegreesToRadians(SwellFromDeg);
@@ -424,7 +450,21 @@ float AROVPawn::GetSwellElevationM(const FVector& LocationCm) const
 	const FVector2D Direction(-FMath::Cos(FromRad), -FMath::Sin(FromRad));
 	const FVector2D PositionM(LocationCm.X / ROVUnits::CmPerM, LocationCm.Y / ROVUnits::CmPerM);
 	const float Theta = K * FVector2D::DotProduct(PositionM, Direction) - Omega * GetWorld()->GetTimeSeconds();
-	return 0.5f * SwellHeightM * FMath::Cos(Theta);
+	return 0.5f * SwellHeightM * GetSwellRamp() * FMath::Cos(Theta);
+}
+
+float AROVPawn::GetSwellRamp() const
+{
+	if (!IsSwellOn() || !GetWorld())
+	{
+		return 0.f;
+	}
+	// Ligar a onda de uma vez faz a água sair do repouso para a velocidade máxima num instante:
+	// o ROV, que estava parado, fica com uma diferença de velocidade que só o arrasto desfaz, devagar
+	// (constante de tempo ~20 s) - ele "deriva" por dezenas de segundos. Simuladores de ondas sobem a
+	// amplitude aos poucos (ramp-up); aqui em 2 períodos, com curva suave (smoothstep: começa e termina sem tranco).
+	const float Progress = (GetWorld()->GetTimeSeconds() - SwellStartTime) / (2.f * SwellPeriodS);
+	return FMath::SmoothStep(0.f, 1.f, Progress);
 }
 
 FVector AROVPawn::GetWaterVelocityMs(const FVector& LocationCm) const
@@ -860,10 +900,19 @@ void AROVPawn::ApplyCameraLimits()
 	}
 }
 
-void AROVPawn::OnSurge(const FInputActionValue& Value) { PilotTranslation.X = FMath::Clamp(Value.Get<float>(), -1.f, 1.f); }
-void AROVPawn::OnSway(const FInputActionValue& Value) { PilotTranslation.Y = FMath::Clamp(Value.Get<float>(), -1.f, 1.f); }
-void AROVPawn::OnHeave(const FInputActionValue& Value) { PilotTranslation.Z = FMath::Clamp(Value.Get<float>(), -1.f, 1.f); }
-void AROVPawn::OnYaw(const FInputActionValue& Value) { PilotYaw = FMath::Clamp(Value.Get<float>(), -1.f, 1.f); }
+bool AROVPawn::IsLocalPilotingBlocked() const
+{
+	// Com o controle remoto ativo (comandos UDP chegando), quem pilota é o console remoto. Teclado e gamepad
+	// ficam bloqueados para o ROV não receber duas ordens ao mesmo tempo (o último a escrever ganharia,
+	// e o comando "pularia" entre os dois). A câmera continua livre: olhar não muda o veículo.
+	// Quando os comandos param (watchdog de 0,5 s), o controle volta sozinho para o local.
+	return UdpLink && UdpLink->IsRemoteActive();
+}
+
+void AROVPawn::OnSurge(const FInputActionValue& Value) { if (IsLocalPilotingBlocked()) return; PilotTranslation.X = FMath::Clamp(Value.Get<float>(), -1.f, 1.f); }
+void AROVPawn::OnSway(const FInputActionValue& Value) { if (IsLocalPilotingBlocked()) return; PilotTranslation.Y = FMath::Clamp(Value.Get<float>(), -1.f, 1.f); }
+void AROVPawn::OnHeave(const FInputActionValue& Value) { if (IsLocalPilotingBlocked()) return; PilotTranslation.Z = FMath::Clamp(Value.Get<float>(), -1.f, 1.f); }
+void AROVPawn::OnYaw(const FInputActionValue& Value) { if (IsLocalPilotingBlocked()) return; PilotYaw = FMath::Clamp(Value.Get<float>(), -1.f, 1.f); }
 
 void AROVPawn::OnLook(const FInputActionValue& Value)
 {
@@ -895,11 +944,13 @@ void AROVPawn::OnToggleCamera()
 
 void AROVPawn::OnToggleMode()
 {
+	if (IsLocalPilotingBlocked()) { return; }
 	SetControlMode(ControlMode == EROVControlMode::Simulator ? EROVControlMode::Demo : EROVControlMode::Simulator);
 }
 
 void AROVPawn::OnToggleLights()
 {
+	if (IsLocalPilotingBlocked()) { return; }
 	SetLightsOn(!bLightsOn);
 }
 
@@ -928,6 +979,7 @@ void AROVPawn::OnLookPad(const FInputActionValue& Value)
 
 void AROVPawn::OnResetHeld()
 {
+	if (IsLocalPilotingBlocked()) { return; }
 	ResetToStart();
 }
 
@@ -956,6 +1008,7 @@ void AROVPawn::SetTargetHeading(float HeadingDeg)
 
 void AROVPawn::OnToggleAutoHeading()
 {
+	if (IsLocalPilotingBlocked()) { return; }
 	SetAutoHeading(!bAutoHeading);
 }
 
@@ -1007,6 +1060,37 @@ void AROVPawn::UpdateAutoVertical(float DeltaTime)
 {
 	// Sem auto: o comando vem direto do piloto
 	TranslationCommand = PilotTranslation;
+
+	// Filtro de ondas (o mesmo notch do station keeping): o swell sobe e desce o ROV a cada período.
+	// O auto vertical deve segurar a profundidade MÉDIA e deixar o ROV acompanhar a órbita da água;
+	// sem o filtro, o heave inverte a cada meia onda (gasta propulsor e nem consegue cancelar a onda).
+	// Roda sempre, mesmo com o auto desligado, para o filtro já estar "aquecido" quando ligar.
+	const double WaveOmega = IsSwellOn() ? 2.0 * PI / SwellPeriodS : 0.0;
+	const float RawVerticalSpeedMs = Hull->IsSimulatingPhysics()
+		? Hull->GetPhysicsLinearVelocity().Z / 100.f
+		: DemoVelocityMs.Z;
+	const float FilteredDepthM = WaveFilterDepth.Process(Telemetry.DepthM, WaveOmega, DeltaTime);
+	const float VerticalSpeedMs = WaveFilterVerticalSpeed.Process(RawVerticalSpeedMs, WaveOmega, DeltaTime); // + = subindo
+	float FilteredAltitudeM = Telemetry.AltitudeM;
+	if (Telemetry.AltitudeM >= 0.f)
+	{
+		FilteredAltitudeM = WaveFilterAltitude.Process(Telemetry.AltitudeM, WaveOmega, DeltaTime);
+	}
+	else
+	{
+		WaveFilterAltitude.Reset(); // sem fundo no alcance: recomeça quando o altímetro voltar
+	}
+
+	// Ganhos por situação ("gain scheduling"). O notch tira ganho e atrasa o sinal perto da frequência
+	// da onda; se o controle tentar responder nessa faixa, o laço fica instável (testado: ciclo de
+	// ±1,8 m a cada ~14 s). Regra de DP: com filtro de ondas, a banda do controle fica bem ABAIXO da
+	// onda. Sem swell: ωn ≈ √(0,8·0,6) ≈ 0,69 rad/s (rápido). Com swell: ωn ≈ √(0,2·0,6) ≈ 0,35 rad/s,
+	// metade da onda de 10 s (0,63 rad/s); 0,6 m/s² é a aceleração vertical por unidade de comando.
+	const bool bWaveGains = WaveOmega > 0.0;
+	DepthPid.Kp = bWaveGains ? 0.2f : 0.8f;
+	DepthPid.Ki = bWaveGains ? 0.02f : 0.08f;
+	DepthPid.Kd = bWaveGains ? 1.0f : 1.5f;
+
 	if (VerticalAuto == EROVVerticalAuto::Off)
 	{
 		return;
@@ -1028,10 +1112,7 @@ void AROVPawn::UpdateAutoVertical(float DeltaTime)
 		return;
 	}
 
-	// Velocidade vertical no mundo (+ = subindo), para o termo D
-	const float VerticalSpeedMs = Hull->IsSimulatingPhysics()
-		? Hull->GetPhysicsLinearVelocity().Z / 100.f
-		: DemoVelocityMs.Z;
+	// Daqui para baixo, tudo usa a medida FILTRADA (profundidade, altitude e velocidade sem o vaivém da onda)
 
 	// "Segura onde parar": logo depois de o piloto soltar (ou de ligar o auto com o ROV em movimento),
 	// o auto só FREIA, com erro zero (apenas o termo D age), e o alvo acompanha a posição.
@@ -1039,8 +1120,8 @@ void AROVPawn::UpdateAutoVertical(float DeltaTime)
 	// em que o piloto soltou, e a inércia levaria o ROV além dele para depois voltar.
 	if (bVerticalSettling)
 	{
-		TargetDepthM = Telemetry.DepthM;
-		TargetAltitudeM = Telemetry.AltitudeM;
+		TargetDepthM = FilteredDepthM;
+		TargetAltitudeM = FilteredAltitudeM;
 		if (FMath::Abs(VerticalSpeedMs) > 0.05f) // m/s
 		{
 			TranslationCommand.Z = DepthPid.Update(0.f, VerticalSpeedMs, DeltaTime);
@@ -1053,8 +1134,8 @@ void AROVPawn::UpdateAutoVertical(float DeltaTime)
 	// Erro "para cima": quanto o ROV precisa subir (positivo) ou descer (negativo).
 	// A profundidade cresce para baixo, por isso o sinal é invertido em relação à altitude.
 	const float ErrorUpM = bDepth
-		? Telemetry.DepthM - TargetDepthM
-		: TargetAltitudeM - Telemetry.AltitudeM;
+		? FilteredDepthM - TargetDepthM
+		: TargetAltitudeM - FilteredAltitudeM;
 
 	TranslationCommand.Z = DepthPid.Update(ErrorUpM, VerticalSpeedMs, DeltaTime);
 }
@@ -1132,16 +1213,19 @@ EROVAutoPhase AROVPawn::GetVerticalPhase() const
 
 void AROVPawn::OnToggleAutoDepth()
 {
+	if (IsLocalPilotingBlocked()) { return; }
 	SetAutoDepth(VerticalAuto != EROVVerticalAuto::Depth);
 }
 
 void AROVPawn::OnToggleAutoAltitude()
 {
+	if (IsLocalPilotingBlocked()) { return; }
 	SetAutoAltitude(VerticalAuto != EROVVerticalAuto::Altitude);
 }
 
 void AROVPawn::OnToggleAutoPosition()
 {
+	if (IsLocalPilotingBlocked()) { return; }
 	SetPositionHold(!bPositionHold);
 }
 

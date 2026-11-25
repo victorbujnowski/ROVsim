@@ -181,7 +181,7 @@ void AROVHUD::DrawHUD()
 		{ TEXT("MODO"),     bSim ? TEXT("SIMULADOR (física real)") : TEXT("DEMONSTRAÇÃO (arcade, sem física)") },
 		{ TEXT("CÂMERA"),   bCockpit ? TEXT("cockpit (vídeo do ROV)") : TEXT("externa") },
 		{ TEXT("LUZES"),    ROV->AreLightsOn() ? TEXT("ligadas") : TEXT("desligadas") },
-		{ TEXT("CONTROLE"), bRemote ? TEXT("REMOTO (UDP 5000)") : TEXT("local") },
+		{ TEXT("CONTROLE"), bRemote ? TEXT("REMOTO (UDP 5000) · teclado/gamepad bloqueados") : TEXT("local") },
 	}, Margin, Margin, Accent);
 
 	const float TopY = Margin + StatusH + SectionGap;

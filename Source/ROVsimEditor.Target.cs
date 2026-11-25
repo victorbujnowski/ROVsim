@@ -11,5 +11,6 @@ public class ROVsimEditorTarget : TargetRules
 		DefaultBuildSettings = BuildSettingsVersion.V7;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
 		ExtraModuleNames.Add("ROVsim");
+		ExtraModuleNames.Add("ROVsimTools"); // ferramentas de editor (commandlets)
 	}
 }

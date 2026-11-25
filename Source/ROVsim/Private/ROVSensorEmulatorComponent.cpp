@@ -160,6 +160,14 @@ void UROVSensorEmulatorComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// Multiplayer: só o SERVIDOR (a máquina que simula o ROV) fala com o mundo externo. Numa cópia
+	// do ROV num cliente (observador), abrir as portas de novo daria conflito e dados duplicados.
+	if (GetOwnerRole() != ROLE_Authority)
+	{
+		SetComponentTickEnabled(false);
+		return;
+	}
+
 	// --- UDP: um socket só de envio, para todas as portas UDP ---
 	UdpSocket = FUdpSocketBuilder(TEXT("ROV_SensorsUdp")).AsNonBlocking().Build();
 	if (!FIPv4Address::Parse(UdpAddress, UdpTargetAddress))

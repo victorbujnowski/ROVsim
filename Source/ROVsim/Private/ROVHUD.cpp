@@ -3,6 +3,7 @@
 #include "ROVPawn.h"
 #include "ROVUdpLinkComponent.h"
 #include "ROVSensorEmulatorComponent.h"
+#include "ROVPlayerController.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
@@ -163,7 +164,10 @@ void AROVHUD::DrawHUD()
 {
 	Super::DrawHUD();
 
-	const AROVPawn* ROV = Cast<AROVPawn>(GetOwningPawn());
+	// Piloto: o próprio pawn. Observador (multiplayer): o ROV do servidor, achado pelo controller.
+	const AROVPlayerController* PC = Cast<AROVPlayerController>(PlayerOwner);
+	const AROVPawn* ROV = PC ? PC->FindROV() : Cast<AROVPawn>(GetOwningPawn());
+	const bool bObserver = PC && PC->IsObserver();
 	if (!ROV || !Canvas)
 	{
 		return;
@@ -181,7 +185,7 @@ void AROVHUD::DrawHUD()
 		{ TEXT("MODO"),     bSim ? TEXT("SIMULADOR (física real)") : TEXT("DEMONSTRAÇÃO (arcade, sem física)") },
 		{ TEXT("CÂMERA"),   bCockpit ? TEXT("cockpit (vídeo do ROV)") : TEXT("externa") },
 		{ TEXT("LUZES"),    ROV->AreLightsOn() ? TEXT("ligadas") : TEXT("desligadas") },
-		{ TEXT("CONTROLE"), bRemote ? TEXT("REMOTO (UDP 5000) · teclado/gamepad bloqueados") : TEXT("local") },
+		{ TEXT("CONTROLE"), bObserver ? TEXT("OBSERVADOR (multiplayer: só assiste)") : bRemote ? TEXT("REMOTO (UDP 5000) · teclado/gamepad bloqueados") : TEXT("local") },
 	}, Margin, Margin, Accent);
 
 	const float TopY = Margin + StatusH + SectionGap;
@@ -327,7 +331,9 @@ void AROVHUD::DrawHUD()
 	}
 
 	// ---------------------------------------------------------------- sensores (saída NMEA)
-	if (const UROVSensorEmulatorComponent* Sensors = ROV->FindComponentByClass<UROVSensorEmulatorComponent>())
+	// (Observador: os sensores só rodam no servidor; não há o que mostrar aqui)
+	const UROVSensorEmulatorComponent* Sensors = bObserver ? nullptr : ROV->FindComponentByClass<UROVSensorEmulatorComponent>();
+	if (Sensors)
 	{
 		TArray<FHudRow> Rows;
 		for (const FROVSensorOutput& Output : Sensors->GetOutputs())
@@ -392,7 +398,10 @@ void AROVHUD::DrawHUD()
 		TEXT("GAMEPAD   stick esq. sobe/gira   stick dir. anda/lateral   D-pad câmera   RB/LB zoom   Y câmera   X luzes"),
 		TEXT("          Menu modo   L3 auto rumo   R3 auto prof.   segurar B reset"),
 	};
-	DrawPanel(Help, Margin, Canvas->ClipY - (Help.Num() * LineHeight + 2.f * Padding) - Margin, HintColor);
+	if (!bObserver) // observador não pilota: a ajuda de teclas não se aplica
+	{
+		DrawPanel(Help, Margin, Canvas->ClipY - (Help.Num() * LineHeight + 2.f * Padding) - Margin, HintColor);
+	}
 
 	// ---------------------------------------------------------------- retícula do cockpit
 	if (bCockpit)

@@ -2,6 +2,8 @@
 
 #include "ROVHUD.h"
 #include "ROVPawn.h"
+#include "ROVPlayerController.h"
+#include "EngineUtils.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
@@ -17,6 +19,7 @@ AROVGameMode::AROVGameMode()
 	// estrutura atual do C++, sem depender de uma instância salva no mapa (que pode guardar
 	// componentes antigos - foi o que travou o ROV quando o corpo passou de "Body" para "Hull").
 	DefaultPawnClass = AROVPawn::StaticClass();
+	PlayerControllerClass = AROVPlayerController::StaticClass();
 
 	PrimaryActorTick.bCanEverTick = true;
 }
@@ -31,6 +34,20 @@ void AROVGameMode::BeginPlay()
 		SmokeStartTime = GetWorld()->GetTimeSeconds();
 		UE_LOG(LogROV, Display, TEXT("SMOKE TEST iniciado"));
 	}
+}
+
+void AROVGameMode::HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer)
+{
+	// Já existe um ROV (o do piloto): este jogador entra como OBSERVADOR, sem pawn. O normal da Unreal
+	// seria criar um pawn para cada jogador, e cada um teria o seu ROV.
+	for (TActorIterator<AROVPawn> It(GetWorld()); It; ++It)
+	{
+		UE_LOG(LogROV, Display, TEXT("Multiplayer: %s entrou como OBSERVADOR"), *GetNameSafe(NewPlayer));
+		NewPlayer->SetViewTarget(*It); // no servidor também: define de onde ele "vê" (relevância de rede)
+		return;
+	}
+	UE_LOG(LogROV, Display, TEXT("Multiplayer: %s é o PILOTO (recebe o ROV)"), *GetNameSafe(NewPlayer));
+	Super::HandleStartingNewPlayer_Implementation(NewPlayer);
 }
 
 AROVPawn* AROVGameMode::FindROV() const

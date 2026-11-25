@@ -124,6 +124,22 @@ The bridge binds UDP 5001 and 10001–10004, so the PowerShell monitors cannot r
 | `rov_tcp_console.ps1` | Interactive TCP command console |
 | `rov_nmea_monitor.ps1 [-ComPort COM21]` | Listens to all sensor outputs, validates checksums, measures rates |
 
+## Multiplayer (work in progress)
+
+Server-authoritative model: the pilot's machine is a **listen server** that runs the physics, autopilots
+and all network/sensor interfaces. Anyone who connects afterwards joins as an **observer** (supervisor,
+client, instructor): no pawn, the camera follows the server's ROV and the HUD shows the replicated
+telemetry, environment and autopilot phases. Movement is replicated by the engine (30 Hz, physics
+smoothing on the client); the rest travels in one `FROVNetState` struct, sent only when it changes.
+
+```
+UnrealEditor.exe ROVsim.uproject "/Game/Maps/Underwater1?listen" -game -windowed    # pilot (host)
+UnrealEditor.exe ROVsim.uproject 127.0.0.1 -game -windowed                          # observer
+```
+
+`-ROVObserverTest[=seconds]` on the observer logs what it receives every 2 s (same fields as the smoke
+test, so both logs can be compared), takes two screenshots and exits.
+
 ## Code
 
 | File | Purpose |
@@ -138,6 +154,7 @@ The bridge binds UDP 5001 and 10001–10004, so the PowerShell monitors cannot r
 | `ROVSensorEmulatorComponent` | NMEA sensors over UDP, TCP and serial (own writer thread) |
 | `ROVHUD` | Telemetry HUD in labelled sections with units and sign conventions |
 | `ROVGameMode` | Spawns the ROV, sets the HUD, automated smoke test |
+| `ROVPlayerController` | Pilot vs observer role; observer camera on the server's ROV; observer network test |
 | `Tools/ROVWebPanel` | Web panel: C# bridge (UDP/TCP ↔ WebSocket) and the dashboard page |
 
 ## Tests

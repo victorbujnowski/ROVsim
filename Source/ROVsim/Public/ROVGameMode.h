@@ -24,6 +24,9 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
+	/** Multiplayer: o primeiro jogador recebe o ROV; os seguintes entram como observadores */
+	virtual void HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer) override;
+
 private:
 	AROVPawn* FindROV() const;
 	void LogTelemetry(const TCHAR* Label) const;

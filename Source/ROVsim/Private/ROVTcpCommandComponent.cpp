@@ -15,6 +15,14 @@ void UROVTcpCommandComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// Multiplayer: só o SERVIDOR (a máquina que simula o ROV) fala com o mundo externo. Numa cópia
+	// do ROV num cliente (observador), abrir as portas de novo daria conflito e dados duplicados.
+	if (GetOwnerRole() != ROLE_Authority)
+	{
+		SetComponentTickEnabled(false);
+		return;
+	}
+
 	// Socket de escuta: fica "atendendo o telefone" na porta CommandPort.
 	// Criado aqui (e não dentro do listener) para sabermos na hora se a porta abriu.
 	ListenSocket = FTcpSocketBuilder(TEXT("ROV_TcpListen"))

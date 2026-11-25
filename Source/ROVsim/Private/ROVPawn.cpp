@@ -22,6 +22,7 @@
 #include "ROVSensorEmulatorComponent.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
+#include "Net/UnrealNetwork.h"
 
 DEFINE_LOG_CATEGORY(LogROV);
 
@@ -42,6 +43,13 @@ AROVPawn::AROVPawn()
 	PrimaryActorTick.bCanEverTick = true;
 	// As forças são calculadas ANTES do passo de física de cada frame
 	PrimaryActorTick.TickGroup = TG_PrePhysics;
+
+	// Multiplayer: o servidor é dono do ROV e manda posição/rotação (replicate movement) e o NetState para os
+	// observadores. 30 vezes por segundo basta: no cliente, a Unreal suaviza a física entre os pacotes.
+	bReplicates = true;
+	SetReplicatingMovement(true);
+	SetNetUpdateFrequency(30.f);
+	bAlwaysRelevant = true; // há um ROV só: todos os observadores sempre recebem, esteja onde estiver a câmera
 
 	// --- Corpo físico ---
 	// Variável e componente se chamam "Hull" (antes era "Body", um StaticMesh): com um nome novo,
@@ -183,6 +191,14 @@ void AROVPawn::BeginPlay()
 	SetControlMode(InitialMode);
 	SetCameraMode(CameraMode);
 	SetLightsOn(bLightsOn);
+
+	// Observador (cliente multiplayer): não tem controle de câmera do piloto; a câmera externa fica
+	// atrás do ROV, olhando um pouco para baixo, e acompanha o rumo dele
+	if (IsObserverCopy())
+	{
+		SpringArm->bUsePawnControlRotation = false;
+		SpringArm->SetRelativeRotation(FRotator(-15.f, 0.f, 0.f));
+	}
 }
 
 // =============================================================================
@@ -307,6 +323,13 @@ void AROVPawn::Tick(float DeltaTime)
 		return;
 	}
 
+	// Observador: NÃO simula nada (quem manda é o servidor). Só cuida da câmera; posição e telemetria chegam pela rede.
+	if (IsObserverCopy())
+	{
+		UpdateCameras(DeltaTime);
+		return;
+	}
+
 	// Pilotos automáticos decidem o comando ANTES de a física usá-lo
 	UpdateAutopilots(DeltaTime);
 
@@ -321,6 +344,7 @@ void AROVPawn::Tick(float DeltaTime)
 
 	UpdateCameras(DeltaTime);
 	UpdateTelemetry();
+	FillNetState(); // o que os observadores vão receber
 }
 
 float AROVPawn::GetSubmergedFraction() const
@@ -1183,6 +1207,10 @@ void AROVPawn::SetTargetAltitude(float AltitudeM)
 
 EROVAutoPhase AROVPawn::GetHeadingPhase() const
 {
+	if (IsObserverCopy())
+	{
+		return NetState.HeadingPhase; // a fase depende do comando do piloto, que só existe no servidor
+	}
 	if (!bAutoHeading)
 	{
 		return EROVAutoPhase::Off;
@@ -1196,6 +1224,10 @@ EROVAutoPhase AROVPawn::GetHeadingPhase() const
 
 EROVAutoPhase AROVPawn::GetVerticalPhase() const
 {
+	if (IsObserverCopy())
+	{
+		return NetState.VerticalPhase; // a fase depende do comando do piloto, que só existe no servidor
+	}
 	if (VerticalAuto == EROVVerticalAuto::Off)
 	{
 		return EROVAutoPhase::Off;
@@ -1269,6 +1301,10 @@ FVector2D AROVPawn::GetPositionOffsetM() const
 
 EROVAutoPhase AROVPawn::GetPositionPhase() const
 {
+	if (IsObserverCopy())
+	{
+		return NetState.PositionPhase; // a fase depende do comando do piloto, que só existe no servidor
+	}
 	if (!bPositionHold)
 	{
 		return EROVAutoPhase::Off;
@@ -1334,4 +1370,66 @@ void AROVPawn::UpdateAutoPosition(float DeltaTime)
 	const FVector ForceBodyN = FRotator(0.f, GetActorRotation().Yaw, 0.f).UnrotateVector(ForceWorldN);
 	TranslationCommand.X = FMath::Clamp(ForceBodyN.X / MaxThrust.X, -1.f, 1.f);
 	TranslationCommand.Y = FMath::Clamp(ForceBodyN.Y / MaxThrust.Y, -1.f, 1.f);
+}
+
+// =============================================================================
+// Multiplayer (replicação)
+//
+// Modelo "servidor autoritativo": a máquina do piloto (listen server) simula tudo. Os outros jogadores
+// conectam como OBSERVADORES: recebem uma cópia do ROV (simulated proxy) que só mostra o que o
+// servidor manda. Assim todos veem o MESMO ROV, e não há duas físicas discordando.
+// =============================================================================
+
+void AROVPawn::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	// Registra o que vai pela rede (sem isso, a marca "Replicated" no .h não faz nada)
+	DOREPLIFETIME(AROVPawn, bLightsOn);
+	DOREPLIFETIME(AROVPawn, NetState);
+}
+
+void AROVPawn::FillNetState()
+{
+	NetState.Telemetry = Telemetry;
+	NetState.ControlMode = ControlMode;
+	NetState.CurrentSpeedKnots = CurrentSpeedKnots;
+	NetState.CurrentTowardDeg = CurrentTowardDeg;
+	NetState.SwellHeightM = SwellHeightM;
+	NetState.SwellPeriodS = SwellPeriodS;
+	NetState.SwellFromDeg = SwellFromDeg;
+	NetState.bAutoHeading = bAutoHeading;
+	NetState.TargetHeadingDeg = TargetHeadingDeg;
+	NetState.VerticalAuto = VerticalAuto;
+	NetState.TargetDepthM = TargetDepthM;
+	NetState.TargetAltitudeM = TargetAltitudeM;
+	NetState.bPositionHold = bPositionHold;
+	NetState.TargetPositionM = TargetPositionM;
+	NetState.HeadingPhase = GetHeadingPhase();
+	NetState.VerticalPhase = GetVerticalPhase();
+	NetState.PositionPhase = GetPositionPhase();
+}
+
+void AROVPawn::OnRep_NetState()
+{
+	// Copia para os membros normais: assim HUD e getters funcionam igual no servidor e no observador
+	Telemetry = NetState.Telemetry;
+	ControlMode = NetState.ControlMode;
+	CurrentSpeedKnots = NetState.CurrentSpeedKnots;
+	CurrentTowardDeg = NetState.CurrentTowardDeg;
+	SwellHeightM = NetState.SwellHeightM;
+	SwellPeriodS = NetState.SwellPeriodS;
+	SwellFromDeg = NetState.SwellFromDeg;
+	bAutoHeading = NetState.bAutoHeading;
+	TargetHeadingDeg = NetState.TargetHeadingDeg;
+	VerticalAuto = NetState.VerticalAuto;
+	TargetDepthM = NetState.TargetDepthM;
+	TargetAltitudeM = NetState.TargetAltitudeM;
+	bPositionHold = NetState.bPositionHold;
+	TargetPositionM = NetState.TargetPositionM;
+}
+
+void AROVPawn::OnRep_LightsOn()
+{
+	SetLightsOn(bLightsOn);
 }

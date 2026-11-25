@@ -88,6 +88,41 @@ struct FROVTelemetry
 };
 
 /**
+ * Estado do ROV que o SERVIDOR manda para os observadores (multiplayer).
+ *
+ * A física, os autos e os sensores só rodam no servidor. A posição e a rotação já são replicadas pela
+ * Unreal ("replicate movement"); aqui vai o resto que o HUD do observador precisa. Num struct só:
+ * a Unreal compara com o último enviado e manda pela rede apenas os campos que mudaram.
+ */
+USTRUCT()
+struct FROVNetState
+{
+	GENERATED_BODY()
+
+	UPROPERTY() FROVTelemetry Telemetry;
+	UPROPERTY() EROVControlMode ControlMode = EROVControlMode::Simulator;
+
+	// Ambiente
+	UPROPERTY() float CurrentSpeedKnots = 0.f;
+	UPROPERTY() float CurrentTowardDeg = 0.f;
+	UPROPERTY() float SwellHeightM = 0.f;
+	UPROPERTY() float SwellPeriodS = 10.f;
+	UPROPERTY() float SwellFromDeg = 0.f;
+
+	// Pilotos automáticos: ligado, alvo e fase de cada um
+	UPROPERTY() bool bAutoHeading = false;
+	UPROPERTY() float TargetHeadingDeg = 0.f;
+	UPROPERTY() EROVVerticalAuto VerticalAuto = EROVVerticalAuto::Off;
+	UPROPERTY() float TargetDepthM = 0.f;
+	UPROPERTY() float TargetAltitudeM = 0.f;
+	UPROPERTY() bool bPositionHold = false;
+	UPROPERTY() FVector2D TargetPositionM = FVector2D::ZeroVector;
+	UPROPERTY() EROVAutoPhase HeadingPhase = EROVAutoPhase::Off;
+	UPROPERTY() EROVAutoPhase VerticalPhase = EROVAutoPhase::Off;
+	UPROPERTY() EROVAutoPhase PositionPhase = EROVAutoPhase::Off;
+};
+
+/**
  * ROV "Doc Ricketts" (MBARI) - veículo operado remotamente.
  *
  * Corpo físico: caixa (UBoxComponent) no tamanho real. O modelo 3D é só visual.
@@ -220,9 +255,17 @@ public:
 	bool AreLightsOn() const { return bLightsOn; }
 	const FROVTelemetry& GetTelemetry() const { return Telemetry; }
 
+	/** true nesta máquina se ela só OBSERVA o ROV (cliente multiplayer): quem simula é o servidor */
+	bool IsObserverCopy() const { return GetLocalRole() == ROLE_SimulatedProxy; }
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void NotifyControllerChanged() override;
+
+	UFUNCTION() void OnRep_LightsOn();
+	UFUNCTION() void OnRep_NetState();
 
 	// =====================================================================
 	// Componentes
@@ -279,7 +322,8 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ROV|Modo")
 	EROVCameraMode CameraMode = EROVCameraMode::External;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ROV|Modo")
+	// ReplicatedUsing: quando o valor chega do servidor, o cliente chama OnRep_LightsOn (acende/apaga os faróis lá também)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_LightsOn, Category = "ROV|Modo")
 	bool bLightsOn = true;
 
 	// =====================================================================
@@ -519,4 +563,9 @@ private:
 	float SwellStartTime = 0.f; // quando o swell foi ligado (para a rampa de entrada)
 
 	FTransform StartTransform; // onde o ROV nasceu (usado pelo RESET)
+
+	// Multiplayer: preenchido pelo servidor a cada frame; nos observadores, OnRep_NetState copia para os membros acima
+	UPROPERTY(ReplicatedUsing = OnRep_NetState)
+	FROVNetState NetState;
+	void FillNetState();
 };
